@@ -295,15 +295,15 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
             
             page += 1
 
-            status = "FAILED" if has_error else "SUCCESS"
-            cur.execute(
-                """
-                UPDATE sync_history SET status = %s, records_processed = %s, error_message = %s, completed_at = %s
-                WHERE id = %s
-                """,
-                (status, total_processed, error_msg, datetime.now(timezone.utc), history_id)
-            )
-            conn.commit()
+        status = "FAILED" if has_error else "SUCCESS"
+        cur.execute(
+            """
+            UPDATE sync_history SET status = %s, records_processed = %s, error_message = %s, completed_at = %s
+            WHERE id = %s
+            """,
+            (status, total_processed, error_msg, datetime.now(timezone.utc), history_id)
+        )
+        conn.commit()
     finally:
         cur.close()
         conn.close()
