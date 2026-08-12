@@ -83,8 +83,8 @@ def sync_master_data():
     
     # We use a hardcoded default credential since company_configs only had tokens
     # Ideally, company_configs should have username/password, but for this demo:
-    username = os.getenv("ESB_USERNAME", "SAECLF")
-    password = os.getenv("ESB_PASSWORD", "Abcd1234!")
+    username = os.getenv("ESB_CORE_USERNAME", "SAECLF")
+    password = os.getenv("ESB_CORE_PASSWORD", "Abcd1234!")
     
     try:
         client = ESBClient(username, password)
