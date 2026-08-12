@@ -90,6 +90,14 @@ def sync_master_data():
         client = ESBClient(username, password)
     except Exception as e:
         print("Failed to initialize ESBClient", e)
+        error_msg = f"Failed to initialize ESBClient: {e}"
+        cur.execute(
+            "INSERT INTO sync_history (entity_type, status, error_message, completed_at) VALUES (%s, %s, %s, %s)",
+            ('MASTER_DATA_ALL', 'FAILED', error_msg, datetime.now(timezone.utc))
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
         return
         
     # Get batch size from engine_settings
