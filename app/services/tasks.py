@@ -33,7 +33,7 @@ class ESBClient:
         try:
             response = self._http_client.get(url, headers=headers, params=params)
             
-            if response.status_code >= 500:
+            if response.status_code >= 400:
                 self._record_error()
                 response.raise_for_status()
             
