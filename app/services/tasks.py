@@ -8,7 +8,7 @@ from app.core.worker import celery_app
 from app.core.db import get_db_connection
 from app.schemas.esb import ESBProductModel, ESBCategoryModel, ESBBranchModel, ESBEmployeeModel, ESBSupplierModel, ESBGenericModel
 
-ESB_API_BASE_URL = os.getenv("ESB_API_BASE_URL", "https://stg7.esb.co.id/core-stg")
+ESB_API_BASE_URL = os.getenv("ESB_CORE_URL", "https://stg-erp.esb.co.id")
 
 class CircuitBreakerOpenException(Exception):
     pass
