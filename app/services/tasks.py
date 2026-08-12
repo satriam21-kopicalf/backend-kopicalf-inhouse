@@ -105,6 +105,11 @@ def sync_master_data():
     settings = typing.cast(dict[str, typing.Any] | None, cur.fetchone())
     batch_size = settings['sync_batch_size'] if settings else 1000
 
+    # Get active company id
+    cur.execute("SELECT id FROM company_configs WHERE is_active = true LIMIT 1")
+    company_row = typing.cast(dict[str, typing.Any] | None, cur.fetchone())
+    company_id = company_row['id'] if company_row else None
+
     # Log start of sync
     cur.execute(
         "INSERT INTO sync_history (entity_type, status) VALUES (%s, %s) RETURNING id",
@@ -246,7 +251,7 @@ def sync_master_data():
                         elif entity == "BRANCH":
                             branch_values.append((
                                 esb_id, parsed_item.branchName, parsed_item.branchCode, True,
-                                parsed_item.locationName, parsed_item.stock, parsed_item.availableStock
+                                parsed_item.locationName, parsed_item.stock, parsed_item.availableStock, company_id
                             ))
                         elif entity == "EMPLOYEE":
                             emp_group = getattr(parsed_item, 'employeeGroup', None)
@@ -296,11 +301,12 @@ def sync_master_data():
                 
                 if branch_values:
                     execute_values(cur, """
-                        INSERT INTO md_outlets (esb_id, name, branch_code, is_active, location_name, stock, available_stock)
+                        INSERT INTO md_outlets (esb_id, name, branch_code, is_active, location_name, stock, available_stock, company_id)
                         VALUES %s
                         ON CONFLICT (esb_id) DO UPDATE SET
                             name = EXCLUDED.name, branch_code = EXCLUDED.branch_code, is_active = EXCLUDED.is_active,
-                            location_name = EXCLUDED.location_name, stock = EXCLUDED.stock, available_stock = EXCLUDED.available_stock
+                            location_name = EXCLUDED.location_name, stock = EXCLUDED.stock, available_stock = EXCLUDED.available_stock,
+                            company_id = EXCLUDED.company_id
                     """, branch_values)
                     
                 if employee_values:
