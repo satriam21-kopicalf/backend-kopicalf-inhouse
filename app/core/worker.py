@@ -22,13 +22,12 @@ celery_app.conf.update(
     enable_utc=True,
 )
 
+# DYNAMIC CRON ROUTER
+# Runs every 5 minutes. The logic inside 'sync_master_data_router' will determine 
+# whether it should actually trigger 'sync_master_data' based on engine_settings.
 celery_app.conf.beat_schedule = {
-    'sync-master-data-work-hours': {
-        'task': 'app.services.tasks.sync_master_data',
-        'schedule': crontab(minute='*/15', hour='7-22'), # Every 15 minutes between 07:00 and 22:59
-    },
-    'sync-master-data-morning-window': {
-        'task': 'app.services.tasks.sync_master_data',
-        'schedule': crontab(minute='*/10', hour='2-6'), # Every 10 minutes between 02:00 and 06:59
+    'dynamic-sync-router': {
+        'task': 'app.services.tasks.sync_master_data_router',
+        'schedule': crontab(minute='*/5'),
     }
 }
