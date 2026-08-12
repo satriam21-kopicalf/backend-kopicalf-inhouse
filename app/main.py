@@ -31,7 +31,7 @@ async def get_engine_settings():
         cur.execute("SELECT sync_batch_size, work_hours_interval_minutes, morning_window_interval_minutes FROM engine_settings WHERE id = 1")
         row = cur.fetchone()
         if row:
-            return row
+            return dict(row)
         return {"error": "Settings not found"}
     finally:
         cur.close()

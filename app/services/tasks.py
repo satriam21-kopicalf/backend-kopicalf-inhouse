@@ -102,209 +102,211 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
     
-    # Resolve schema_cls
-    schema_cls: typing.Type[typing.Any] = ESBGenericModel
-    for ep in get_all_endpoints():
-        if ep["entity"] == entity:
-            schema_cls = ep["schema"]
-            break
-
     try:
-        client = ESBClient(esb_token)
-    except Exception as e:
-        print("Failed to initialize ESBClient", e)
-        return
-        
-    cur.execute("SELECT sync_batch_size FROM engine_settings WHERE id = 1")
-    settings = typing.cast(dict[str, typing.Any] | None, cur.fetchone())
-    batch_size = settings['sync_batch_size'] if settings else 1000
+        # Resolve schema_cls
+        schema_cls: typing.Type[typing.Any] = ESBGenericModel
+        for ep in get_all_endpoints():
+            if ep["entity"] == entity:
+                schema_cls = ep["schema"]
+                break
 
-    cur.execute(
-        "INSERT INTO sync_history (entity_type, status, company_id) VALUES (%s, %s, %s) RETURNING id",
-        (entity, 'STARTED', company_id)
-    )
-    result = typing.cast(dict[str, typing.Any] | None, cur.fetchone())
-    if result is None:
-        raise RuntimeError("Failed to create sync history record")
-    history_id = result['id']
-    conn.commit()
-    
-    total_processed = 0
-    has_error = False
-    error_msg = ""
-    
-    page = 1
-    
-    while True:
         try:
-            params = {"page": page, "limit": batch_size}
-            if date_from and date_to:
-                params["start_date"] = date_from
-                params["end_date"] = date_to
-                
-            data = client.get(path, params=params)
-            records = []
-            total_pages = 1
-            
-            if isinstance(data, list):
-                records = data
-            elif isinstance(data, dict):
-                pagination = data.get('pagination', {})
-                if pagination:
-                    total_pages = pagination.get('totalPages', 1)
-                    
-                result_obj = data.get('result', [])
-                if isinstance(result_obj, list):
-                    records = result_obj
-                elif isinstance(result_obj, dict):
-                    records = result_obj.get('data', [])
-                else:
-                    records = []
-            else:
-                records = []
-                
-        except CircuitBreakerOpenException:
-            has_error = True
-            error_msg = "Circuit breaker opened during sync."
-            break
-        except Exception as api_err:
-            has_error = True
-            error_msg = f"API call failed for {entity} page {page}: {api_err}"
-            break 
+            client = ESBClient(esb_token)
+        except Exception as e:
+            print("Failed to initialize ESBClient", e)
+            return
         
-        if not records:
-            break 
-        
-        staging_values = []
-        product_values = []
-        branch_values = []
-        employee_values = []
-        supplier_values = []
-        dlq_values = []
-        
-        for item in records:
-            try:
-                parsed_item = schema_cls(**item)
-                if entity == "PRODUCT":
-                    esb_id = str(parsed_item.productID)
-                elif entity == "BRANCH":
-                    esb_id = str(parsed_item.branchID)
-                else:
-                    esb_id = getattr(parsed_item, "esb_id", "unknown")
-                
-                # Use (company_id, entity, esb_id) uniquely
-                staging_values.append((entity, esb_id, company_id, json.dumps(item), datetime.now(timezone.utc)))
-                
-                if entity == "PRODUCT":
-                    product_values.append((
-                        esb_id, company_id, parsed_item.productName, parsed_item.productCode, parsed_item.bomName, 
-                        parsed_item.categoryName, parsed_item.subCategoryName, parsed_item.categoryTypeName, 
-                        parsed_item.flagActive, parsed_item.barcode, parsed_item.uomName, 
-                        parsed_item.purchasePrice, parsed_item.sellPrice, parsed_item.stock, 
-                        parsed_item.hasVariant, parsed_item.isRawMaterial, parsed_item.isProduction, 
-                        parsed_item.imageUrl
-                    ))
-                elif entity == "BRANCH":
-                    branch_values.append((
-                        esb_id, company_id, parsed_item.branchName, parsed_item.branchCode, True,
-                        parsed_item.locationName, parsed_item.stock, parsed_item.availableStock
-                    ))
-                elif entity == "EMPLOYEE":
-                    emp_group = getattr(parsed_item, 'employeeGroup', None)
-                    branch_id = getattr(parsed_item, 'branch_id', 'UNKNOWN')
-                    status = getattr(parsed_item, 'status', 'ACTIVE')
-                    employee_values.append((
-                        esb_id, company_id, parsed_item.full_name, parsed_item.position,
-                        emp_group, status, branch_id
-                    ))
-                elif entity == "SUPPLIER":
-                    sup_category = getattr(parsed_item, 'supplierCategory', None)
-                    status = getattr(parsed_item, 'status', 'ACTIVE')
-                    supplier_values.append((
-                        esb_id, company_id, parsed_item.name, parsed_item.type,
-                        sup_category, status
-                    ))
-                total_processed += 1
-            except Exception as ve:
-                dlq_values.append((entity, json.dumps(item), str(ve)))
-        
-        if staging_values:
-            execute_values(cur, """
-                INSERT INTO esb_raw_staging (entity_type, esb_id, company_id, raw_data, updated_at)
-                VALUES %s
-                ON CONFLICT (company_id, entity_type, esb_id) DO UPDATE SET
-                    raw_data = EXCLUDED.raw_data,
-                    updated_at = EXCLUDED.updated_at
-            """, staging_values)
-        
-        if product_values:
-            execute_values(cur, """
-                INSERT INTO md_products (
-                    esb_id, company_id, name, product_code, bom_name, category_name, sub_category_name, category_type_name, 
-                    flag_active, barcode, uom_name, purchase_price, sell_price, stock, has_variant, 
-                    is_raw_material, is_production, image_url
-                )
-                VALUES %s
-                ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                    name = EXCLUDED.name, product_code = EXCLUDED.product_code, bom_name = EXCLUDED.bom_name,
-                    category_name = EXCLUDED.category_name, sub_category_name = EXCLUDED.sub_category_name,
-                    category_type_name = EXCLUDED.category_type_name, flag_active = EXCLUDED.flag_active,
-                    barcode = EXCLUDED.barcode, uom_name = EXCLUDED.uom_name, purchase_price = EXCLUDED.purchase_price,
-                    sell_price = EXCLUDED.sell_price, stock = EXCLUDED.stock, has_variant = EXCLUDED.has_variant,
-                    is_raw_material = EXCLUDED.is_raw_material, is_production = EXCLUDED.is_production, image_url = EXCLUDED.image_url
-            """, product_values)
-        
-        if branch_values:
-            execute_values(cur, """
-                INSERT INTO md_outlets (esb_id, company_id, name, branch_code, is_active, location_name, stock, available_stock)
-                VALUES %s
-                ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                    name = EXCLUDED.name, branch_code = EXCLUDED.branch_code, is_active = EXCLUDED.is_active,
-                    location_name = EXCLUDED.location_name, stock = EXCLUDED.stock, available_stock = EXCLUDED.available_stock
-            """, branch_values)
-            
-        if employee_values:
-            execute_values(cur, """
-                INSERT INTO md_employees (esb_id, company_id, name, role, employee_group, status, branch_id)
-                VALUES %s
-                ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                    name = EXCLUDED.name, role = EXCLUDED.role, employee_group = EXCLUDED.employee_group,
-                    status = EXCLUDED.status, branch_id = EXCLUDED.branch_id
-            """, employee_values)
-            
-        if supplier_values:
-            execute_values(cur, """
-                INSERT INTO md_suppliers (esb_id, company_id, name, type, supplier_category, status)
-                VALUES %s
-                ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                    name = EXCLUDED.name, type = EXCLUDED.type, supplier_category = EXCLUDED.supplier_category,
-                    status = EXCLUDED.status
-            """, supplier_values)
-            
-        if dlq_values:
-            execute_values(cur, """
-                INSERT INTO dlq_logs (entity_type, raw_payload, error_reason)
-                VALUES %s
-            """, dlq_values)
+        cur.execute("SELECT sync_batch_size FROM engine_settings WHERE id = 1")
+        settings = typing.cast(dict[str, typing.Any] | None, cur.fetchone())
+        batch_size = settings['sync_batch_size'] if settings else 1000
 
+        cur.execute(
+            "INSERT INTO sync_history (entity_type, status, company_id) VALUES (%s, %s, %s) RETURNING id",
+            (entity, 'STARTED', company_id)
+        )
+        result = typing.cast(dict[str, typing.Any] | None, cur.fetchone())
+        if result is None:
+            raise RuntimeError("Failed to create sync history record")
+        history_id = result['id']
         conn.commit()
         
-        if page >= total_pages:
-            break
+        total_processed = 0
+        has_error = False
+        error_msg = ""
         
-        page += 1
+        page = 1
+        
+        while True:
+            try:
+                params = {"page": page, "limit": batch_size}
+                if date_from and date_to:
+                    params["start_date"] = date_from
+                    params["end_date"] = date_to
+                    
+                data = client.get(path, params=params)
+                records = []
+                total_pages = 1
+                
+                if isinstance(data, list):
+                    records = data
+                elif isinstance(data, dict):
+                    pagination = data.get('pagination', {})
+                    if pagination:
+                        total_pages = pagination.get('totalPages', 1)
+                        
+                    result_obj = data.get('result', [])
+                    if isinstance(result_obj, list):
+                        records = result_obj
+                    elif isinstance(result_obj, dict):
+                        records = result_obj.get('data', [])
+                    else:
+                        records = []
+                else:
+                    records = []
+                    
+            except CircuitBreakerOpenException:
+                has_error = True
+                error_msg = "Circuit breaker opened during sync."
+                break
+            except Exception as api_err:
+                has_error = True
+                error_msg = f"API call failed for {entity} page {page}: {api_err}"
+                break 
+            
+            if not records:
+                break 
+            
+            staging_values = []
+            product_values = []
+            branch_values = []
+            employee_values = []
+            supplier_values = []
+            dlq_values = []
+            
+            for item in records:
+                try:
+                    parsed_item = schema_cls(**item)
+                    if entity == "PRODUCT":
+                        esb_id = str(parsed_item.productID)
+                    elif entity == "BRANCH":
+                        esb_id = str(parsed_item.branchID)
+                    else:
+                        esb_id = getattr(parsed_item, "esb_id", "unknown")
+                    
+                    # Use (company_id, entity, esb_id) uniquely
+                    staging_values.append((entity, esb_id, company_id, json.dumps(item), datetime.now(timezone.utc)))
+                    
+                    if entity == "PRODUCT":
+                        product_values.append((
+                            esb_id, company_id, parsed_item.productName, parsed_item.productCode, parsed_item.bomName, 
+                            parsed_item.categoryName, parsed_item.subCategoryName, parsed_item.categoryTypeName, 
+                            parsed_item.flagActive, parsed_item.barcode, parsed_item.uomName, 
+                            parsed_item.purchasePrice, parsed_item.sellPrice, parsed_item.stock, 
+                            parsed_item.hasVariant, parsed_item.isRawMaterial, parsed_item.isProduction, 
+                            parsed_item.imageUrl
+                        ))
+                    elif entity == "BRANCH":
+                        branch_values.append((
+                            esb_id, company_id, parsed_item.branchName, parsed_item.branchCode, True,
+                            parsed_item.locationName, parsed_item.stock, parsed_item.availableStock
+                        ))
+                    elif entity == "EMPLOYEE":
+                        emp_group = getattr(parsed_item, 'employeeGroup', None)
+                        branch_id = getattr(parsed_item, 'branch_id', 'UNKNOWN')
+                        status = getattr(parsed_item, 'status', 'ACTIVE')
+                        employee_values.append((
+                            esb_id, company_id, parsed_item.full_name, parsed_item.position,
+                            emp_group, status, branch_id
+                        ))
+                    elif entity == "SUPPLIER":
+                        sup_category = getattr(parsed_item, 'supplierCategory', None)
+                        status = getattr(parsed_item, 'status', 'ACTIVE')
+                        supplier_values.append((
+                            esb_id, company_id, parsed_item.name, parsed_item.type,
+                            sup_category, status
+                        ))
+                    total_processed += 1
+                except Exception as ve:
+                    dlq_values.append((entity, json.dumps(item), str(ve)))
+            
+            if staging_values:
+                execute_values(cur, """
+                    INSERT INTO esb_raw_staging (entity_type, esb_id, company_id, raw_data, updated_at)
+                    VALUES %s
+                    ON CONFLICT (company_id, entity_type, esb_id) DO UPDATE SET
+                        raw_data = EXCLUDED.raw_data,
+                        updated_at = EXCLUDED.updated_at
+                """, staging_values)
+            
+            if product_values:
+                execute_values(cur, """
+                    INSERT INTO md_products (
+                        esb_id, company_id, name, product_code, bom_name, category_name, sub_category_name, category_type_name, 
+                        flag_active, barcode, uom_name, purchase_price, sell_price, stock, has_variant, 
+                        is_raw_material, is_production, image_url
+                    )
+                    VALUES %s
+                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                        name = EXCLUDED.name, product_code = EXCLUDED.product_code, bom_name = EXCLUDED.bom_name,
+                        category_name = EXCLUDED.category_name, sub_category_name = EXCLUDED.sub_category_name,
+                        category_type_name = EXCLUDED.category_type_name, flag_active = EXCLUDED.flag_active,
+                        barcode = EXCLUDED.barcode, uom_name = EXCLUDED.uom_name, purchase_price = EXCLUDED.purchase_price,
+                        sell_price = EXCLUDED.sell_price, stock = EXCLUDED.stock, has_variant = EXCLUDED.has_variant,
+                        is_raw_material = EXCLUDED.is_raw_material, is_production = EXCLUDED.is_production, image_url = EXCLUDED.image_url
+                """, product_values)
+            
+            if branch_values:
+                execute_values(cur, """
+                    INSERT INTO md_outlets (esb_id, company_id, name, branch_code, is_active, location_name, stock, available_stock)
+                    VALUES %s
+                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                        name = EXCLUDED.name, branch_code = EXCLUDED.branch_code, is_active = EXCLUDED.is_active,
+                        location_name = EXCLUDED.location_name, stock = EXCLUDED.stock, available_stock = EXCLUDED.available_stock
+                """, branch_values)
+                
+            if employee_values:
+                execute_values(cur, """
+                    INSERT INTO md_employees (esb_id, company_id, name, role, employee_group, status, branch_id)
+                    VALUES %s
+                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                        name = EXCLUDED.name, role = EXCLUDED.role, employee_group = EXCLUDED.employee_group,
+                        status = EXCLUDED.status, branch_id = EXCLUDED.branch_id
+                """, employee_values)
+                
+            if supplier_values:
+                execute_values(cur, """
+                    INSERT INTO md_suppliers (esb_id, company_id, name, type, supplier_category, status)
+                    VALUES %s
+                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                        name = EXCLUDED.name, type = EXCLUDED.type, supplier_category = EXCLUDED.supplier_category,
+                        status = EXCLUDED.status
+                """, supplier_values)
+                
+            if dlq_values:
+                execute_values(cur, """
+                    INSERT INTO dlq_logs (entity_type, raw_payload, error_reason)
+                    VALUES %s
+                """, dlq_values)
 
-    status = "FAILED" if has_error else "SUCCESS"
-    cur.execute(
-        """
-        UPDATE sync_history SET status = %s, records_processed = %s, error_message = %s, completed_at = %s
-        WHERE id = %s
-        """,
-        (status, total_processed, error_msg, datetime.now(timezone.utc), history_id)
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+            conn.commit()
+            
+            if page >= total_pages:
+                break
+            
+            page += 1
+
+            status = "FAILED" if has_error else "SUCCESS"
+            cur.execute(
+                """
+                UPDATE sync_history SET status = %s, records_processed = %s, error_message = %s, completed_at = %s
+                WHERE id = %s
+                """,
+                (status, total_processed, error_msg, datetime.now(timezone.utc), history_id)
+            )
+            conn.commit()
+    finally:
+        cur.close()
+        conn.close()
 
 
 @celery_app.task
@@ -392,7 +394,7 @@ def sync_master_data_router():
         if last_sync and last_sync.get('completed_at'):
             last_sync_time = last_sync['completed_at']
             delta_minutes = (datetime.now(timezone.utc) - last_sync_time).total_seconds() / 60.0
-            if delta_minutes >= target_interval:
+            if delta_minutes >= (target_interval - 0.5):
                 should_run = True
         else:
             should_run = True
