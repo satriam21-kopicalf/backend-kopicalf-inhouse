@@ -190,8 +190,15 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                         esb_id = str(parsed_item.productID)
                     elif entity == "BRANCH":
                         esb_id = str(parsed_item.branchID)
+                    elif entity == "PROD_CATEGORY":
+                        esb_id = str(parsed_item.categoryID)
+                    elif entity == "EMPLOYEE":
+                        esb_id = str(parsed_item.employeeID)
+                    elif entity == "SUPPLIER":
+                        esb_id = str(parsed_item.supplierID)
                     else:
-                        esb_id = getattr(parsed_item, "esb_id", "unknown")
+                        esb_id_val = item.get('id') or item.get(f"{entity.lower().split('_')[-1]}ID") or item.get('coaNo') or item.get('code') or item.get('name')
+                        esb_id = str(esb_id_val) if esb_id_val else "unknown"
                     
                     # Use (company_id, entity, esb_id) uniquely
                     staging_values.append((entity, esb_id, company_id, json.dumps(item), datetime.now(timezone.utc)))
@@ -330,9 +337,23 @@ def sync_master_data():
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         historical_start = "2026-07-01"
             
+        # Try to get dynamic token
+        dynamic_token = None
+        esb_user = os.getenv("ESB_CORE_USERNAME")
+        esb_pass = os.getenv("ESB_CORE_PASSWORD")
+        if esb_user and esb_pass:
+            try:
+                login_url = f"{ESB_API_BASE_URL}/auth/login"
+                res = httpx.post(login_url, json={"username": esb_user, "password": esb_pass}, timeout=15.0)
+                if res.status_code == 200:
+                    data = res.json()
+                    dynamic_token = data.get("result", {}).get("accessToken")
+            except Exception as e:
+                print(f"Failed to fetch dynamic token: {e}")
+
         for company in companies:
             company_id = company['id']
-            esb_token = company['esb_token']
+            esb_token = dynamic_token if dynamic_token else company['esb_token']
             
             if not esb_token:
                 continue

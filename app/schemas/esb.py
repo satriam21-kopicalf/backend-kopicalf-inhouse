@@ -4,7 +4,6 @@ from typing import Optional
 class ESBGenericModel(BaseModel):
     """Generic model for staging data that just requires an esb_id."""
     model_config = ConfigDict(extra='allow')
-    esb_id: str = Field(..., description="ID dari ESB")
 
 class ESBBranchModel(BaseModel):
     model_config = ConfigDict(extra='allow')
@@ -37,14 +36,14 @@ class ESBProductModel(BaseModel):
 
 class ESBCategoryModel(BaseModel):
     model_config = ConfigDict(extra='allow')
-    esb_id: str = Field(..., description="ID Category dari ESB lama")
-    name: str = Field(..., min_length=3)
+    categoryID: int
+    categoryName: str
     status: str = Field(default="ACTIVE")
 
 class ESBEmployeeModel(BaseModel):
     model_config = ConfigDict(extra='allow')
-    esb_id: str = Field(..., description="ID Employee dari ESB lama")
-    full_name: str
+    employeeID: int = Field(alias='employeeId', default=0)
+    full_name: str = Field(alias='fullName', default="Unknown")
     position: str = Field(default="STAFF")
     branch_id: str = Field(default="UNKNOWN")
     status: str = Field(default="ACTIVE")
@@ -52,8 +51,8 @@ class ESBEmployeeModel(BaseModel):
 
 class ESBSupplierModel(BaseModel):
     model_config = ConfigDict(extra='allow')
-    esb_id: str = Field(..., description="ID Supplier dari ESB")
-    name: str = Field(..., min_length=3)
+    supplierID: int = Field(alias='supplierId', default=0)
+    name: str = Field(alias='supplierName', default="Unknown")
     type: Optional[str] = Field(default="GENERAL")
     status: str = Field(default="ACTIVE")
     supplierCategory: Optional[str] = None
