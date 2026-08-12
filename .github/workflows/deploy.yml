@@ -30,4 +30,4 @@ jobs:
           password: ${{ secrets.VPS_PASSWORD }}
           script: |
             cd /root/be-kopicalf-inhouse
-            docker compose restart
+            docker compose up -d --build
