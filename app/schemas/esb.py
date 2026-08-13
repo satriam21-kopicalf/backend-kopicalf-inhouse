@@ -52,9 +52,9 @@ class ESBSubCategoryModel(BaseModel):
 
 class ESBUnitModel(BaseModel):
     model_config = ConfigDict(extra='allow')
-    unitID: int = Field(validation_alias=AliasChoices('id', 'unitID'), default=0)
-    unitCode: Optional[str] = None
-    unitName: str
+    unitID: int = Field(validation_alias=AliasChoices('id', 'unitID', 'uomID', 'metricID'), default=0)
+    unitCode: Optional[str] = Field(validation_alias=AliasChoices('unitCode', 'metricName'), default=None)
+    unitName: str = Field(validation_alias=AliasChoices('unitName', 'uomName'), default="-")
     flagActive: Optional[int] = Field(default=1)
 
 class ESBBomModel(BaseModel):

@@ -138,11 +138,19 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
         has_error = False
         error_msg = ""
         
-        page = 1
-        
-        while True:
+        fetch_queue = []
+        if entity == "BRANCH_PRODUCT":
+            cur.execute("SELECT esb_id FROM md_products WHERE company_id = %s", (company_id,))
+            product_ids = [row['esb_id'] for row in cur.fetchall()]
+            for pid in product_ids:
+                fetch_queue.append({"productDetailID": pid, "page": 1, "limit": batch_size})
+        else:
+            fetch_queue.append({"page": 1, "limit": batch_size})
+            
+        while fetch_queue:
+            params = fetch_queue.pop(0)
+            
             try:
-                params = {"page": page, "limit": batch_size}
                 if date_from and date_to:
                     params["start_date"] = date_from
                     params["end_date"] = date_to
@@ -163,6 +171,9 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                         records = result_obj
                     elif isinstance(result_obj, dict):
                         records = result_obj.get('data', [])
+                        if not pagination and 'count' in result_obj:
+                            import math
+                            total_pages = math.ceil(result_obj['count'] / batch_size)
                     else:
                         records = []
                 else:
@@ -174,11 +185,13 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                 break
             except Exception as api_err:
                 has_error = True
-                error_msg = f"API call failed for {entity} page {page}: {api_err}"
+                error_msg = f"API call failed for {entity} page {params.get('page', 1)}: {api_err}"
                 break 
             
             if not records:
-                break 
+                # Instead of break, continue because there might be other product IDs in queue
+                continue 
+
             
             staging_values = []
             product_values = []
@@ -409,10 +422,10 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
 
             conn.commit()
             
-            if page >= total_pages:
-                break
-            
-            page += 1
+            if params["page"] < total_pages:
+                next_params = params.copy()
+                next_params["page"] += 1
+                fetch_queue.append(next_params)
 
         status = "FAILED" if has_error else "SUCCESS"
         cur.execute(
