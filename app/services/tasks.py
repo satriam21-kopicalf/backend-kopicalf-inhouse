@@ -141,7 +141,17 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
         error_msg = ""
         
         fetch_queue = []
-        fetch_queue.append({"page": 1, "limit": batch_size})
+        if entity == "BRANCH_PRODUCT":
+            cur.execute("SELECT esb_id FROM md_products WHERE company_id = %s", (company_id,))
+            product_ids = [row['esb_id'] for row in cur.fetchall()]
+            for pid in product_ids:
+                fetch_queue.append({"productDetailID": pid, "page": 1, "limit": batch_size})
+            if not product_ids:
+                # If no products, we can't fetch stock location since API requires productDetailID
+                error_msg = "No products found. Please sync Master Product first."
+                has_error = True
+        else:
+            fetch_queue.append({"page": 1, "limit": batch_size})
             
         while fetch_queue:
             params = fetch_queue.pop(0)
@@ -219,8 +229,12 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                         esb_id = str(parsed_item.bomID)
                     elif entity == "BRANCH_PRODUCT":
                         esb_id = str(parsed_item.branchProductID)
+                        if esb_id == "0":
+                            esb_id = f"{parsed_item.branchID}_{parsed_item.productID}"
                     elif entity == "PRICELIST":
                         esb_id = str(parsed_item.pricelistID)
+                        if esb_id == "0":
+                            esb_id = f"{parsed_item.productID}_{parsed_item.branchID}"
                     elif entity == "EMPLOYEE":
                         esb_id = str(parsed_item.employeeID)
                     elif entity == "SUPPLIER":
@@ -228,6 +242,9 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                     else:
                         esb_id_val = item.get('id') or item.get(f"{entity.lower().split('_')[-1]}ID") or item.get('coaNo') or item.get('code') or item.get('name')
                         esb_id = str(esb_id_val) if esb_id_val else "unknown"
+                        if esb_id == "unknown":
+                            import hashlib
+                            esb_id = hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
                     
                     # Use (company_id, entity, esb_id) uniquely
                     staging_values.append((entity, esb_id, company_id, json.dumps(item), datetime.now(timezone.utc)))
