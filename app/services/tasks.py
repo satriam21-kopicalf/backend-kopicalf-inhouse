@@ -15,44 +15,82 @@ import pytz
 
 ESB_API_BASE_URL = os.getenv("ESB_CORE_URL", "https://stg7.esb.co.id/core-stg")
 
+def _refresh_esb_token() -> typing.Optional[str]:
+    """Login ulang ke ESB dan kembalikan token baru. Return None jika gagal."""
+    esb_user = os.getenv("ESB_CORE_USERNAME")
+    esb_pass = os.getenv("ESB_CORE_PASSWORD")
+    if not esb_user or not esb_pass:
+        return None
+    try:
+        res = httpx.post(
+            f"{ESB_API_BASE_URL}/auth/login",
+            json={"username": esb_user, "password": esb_pass},
+            timeout=15.0
+        )
+        if res.status_code == 200:
+            return res.json().get("result", {}).get("accessToken")
+    except Exception:
+        pass
+    return None
+
+
 class CircuitBreakerOpenException(Exception):
     pass
 
+
 class ESBClient:
-    def __init__(self, token):
+    """HTTP client untuk ESB API dengan auto token refresh saat 401."""
+
+    def __init__(self, token: str):
         self.token = token
         self.error_count = 0
         self.circuit_open = False
         self._http_client = httpx.Client(timeout=60.0)
-        
-    def get(self, path, params=None):
+
+    def get(self, path: str, params: typing.Optional[dict] = None):
         if self.circuit_open:
             raise CircuitBreakerOpenException("Circuit is open due to consecutive failures")
-            
+
         url = f"{ESB_API_BASE_URL}{path}"
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json"
-        }
-        try:
-            response = self._http_client.get(url, headers=headers, params=params)
-            
-            if response.status_code >= 400:
-                if response.status_code == 400 and "stock-location" in url:
-                    return {"result": []}
-                self._record_error()
-                response.raise_for_status()
-            
-            self.error_count = 0
-            return response.json()
-        except Exception as e:
+
+        response = self._http_client.get(
+            url,
+            headers=self._headers(),
+            params=params
+        )
+
+        # Token expired — coba refresh sekali
+        if response.status_code == 401:
+            new_token = _refresh_esb_token()
+            if new_token:
+                self.token = new_token
+                response = self._http_client.get(
+                    url,
+                    headers=self._headers(),
+                    params=params
+                )
+
+        if response.status_code >= 400:
+            # 400 pada stock-location = productDetailID tidak ditemukan, skip saja
+            if response.status_code == 400 and "stock-location" in url:
+                return {"result": []}
             self._record_error()
-            raise e
-            
+            response.raise_for_status()
+
+        self.error_count = 0
+        return response.json()
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+
     def _record_error(self):
         self.error_count += 1
         if self.error_count >= 3:
             self.circuit_open = True
+
 
 
 def get_all_endpoints():
@@ -65,8 +103,8 @@ def get_all_endpoints():
         
         {"entity": "PRODUCT_SUB_CATEGORY", "path": "/product/sub-category", "schema": ESBSubCategoryModel},
         {"entity": "PRODUCT_UNIT", "path": "/units", "schema": ESBUnitModel},
-        {"entity": "BRANCH_PRODUCT", "path": "/product/stock-location", "schema": ESBBranchProductModel},
         {"entity": "PRICELIST", "path": "/pricelist", "schema": ESBPricelistModel},
+        {"entity": "BRANCH_PRODUCT", "path": "/product/stock-location", "schema": ESBBranchProductModel},
         {"entity": "CUSTOMER_PRICELIST", "path": "/customer-pricelist", "schema": ESBGenericModel},
         {"entity": "BOM", "path": "/product/bom", "schema": ESBBomModel},
         {"entity": "DOCUMENT_TEMPLATE", "path": "/document-template", "schema": ESBGenericModel},
@@ -141,13 +179,19 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
         
         fetch_queue = []
         if entity == "BRANCH_PRODUCT":
-            cur.execute("SELECT esb_id FROM md_products WHERE company_id = %s", (company_id,))
-            product_ids = [row['esb_id'] for row in cur.fetchall()]
-            for pid in product_ids:
-                fetch_queue.append({"productId": pid, "page": 1, "limit": batch_size})
-            if not product_ids:
-                # If no products, we can't fetch stock location since API requires productDetailID
-                error_msg = "No products found. Please sync Master Product first."
+            # ESB API requires productDetailID for stock-location
+            # We extract unique productDetailIDs from the PRICELIST raw data
+            cur.execute("""
+                SELECT DISTINCT CAST(raw_data->>'productDetailID' AS TEXT) AS pd_id 
+                FROM esb_raw_staging 
+                WHERE entity_type = 'PRICELIST' AND company_id = %s 
+                  AND raw_data->>'productDetailID' IS NOT NULL
+            """, (company_id,))
+            product_detail_ids = [row['pd_id'] for row in cur.fetchall() if row['pd_id']]
+            for pd_id in product_detail_ids:
+                fetch_queue.append({"productDetailID": pd_id, "page": 1, "limit": batch_size})
+            if not product_detail_ids:
+                error_msg = "No product details found. Please ensure PRICELIST is synced first."
                 has_error = True
         else:
             fetch_queue.append({"page": 1, "limit": batch_size})
@@ -214,6 +258,8 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
             for item in records:
                 try:
                     parsed_item = schema_cls(**item)
+
+                    # ─── Derive esb_id per entity ─────────────────────────────
                     if entity == "PRODUCT":
                         esb_id = str(parsed_item.productID)
                     elif entity == "BRANCH":
@@ -223,98 +269,184 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                     elif entity == "PRODUCT_SUB_CATEGORY":
                         esb_id = str(parsed_item.subCategoryID)
                     elif entity == "PRODUCT_UNIT":
-                        esb_id = str(parsed_item.unitID)
+                        # uomID adalah ID utama unit (bukan metricID grup)
+                        esb_id = str(parsed_item.uomID)
                     elif entity == "BOM":
                         esb_id = str(parsed_item.bomID)
                     elif entity == "BRANCH_PRODUCT":
-                        esb_id = str(parsed_item.branchProductID)
+                        # productDetailID adalah identifier utama dari stock-location
+                        esb_id = str(parsed_item.productDetailID)
                         if esb_id == "0":
-                            esb_id = f"{parsed_item.branchID}_{parsed_item.productID}"
+                            import hashlib
+                            esb_id = hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
                     elif entity == "PRICELIST":
+                        # ID field di response adalah 'ID' (kapital)
                         esb_id = str(parsed_item.pricelistID)
                         if esb_id == "0":
-                            esb_id = f"{parsed_item.productID}_{parsed_item.branchID}"
+                            import hashlib
+                            esb_id = hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
                     elif entity == "EMPLOYEE":
                         esb_id = str(parsed_item.employeeID)
                     elif entity == "SUPPLIER":
                         esb_id = str(parsed_item.supplierID)
                     else:
-                        esb_id_val = item.get('id') or item.get(f"{entity.lower().split('_')[-1]}ID") or item.get('coaNo') or item.get('code') or item.get('name')
+                        esb_id_val = (
+                            item.get('id') or item.get('ID') or
+                            item.get(f"{entity.lower().split('_')[-1]}ID") or
+                            item.get('coaNo') or item.get('code') or item.get('name')
+                        )
                         esb_id = str(esb_id_val) if esb_id_val else "unknown"
                         if esb_id == "unknown":
                             import hashlib
                             esb_id = hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
-                    
-                    # Use (company_id, entity, esb_id) uniquely
+
+                    # Staging row
                     staging_values.append((entity, esb_id, company_id, json.dumps(item), datetime.now(timezone.utc)))
-                    
+
+                    # ─── Extract ke tabel spesifik ────────────────────────────
                     if entity == "PRODUCT":
                         product_values.append((
-                            esb_id, company_id, parsed_item.productName, parsed_item.productCode, parsed_item.bomName, 
-                            parsed_item.categoryName, parsed_item.subCategoryName, parsed_item.categoryTypeName, 
-                            parsed_item.flagActive if parsed_item.flagActive is not None else 1, parsed_item.barcode, parsed_item.uomName, 
-                            parsed_item.purchasePrice, parsed_item.sellPrice, parsed_item.stock, 
-                            bool(parsed_item.hasVariant) if parsed_item.hasVariant is not None else False, 
-                            bool(parsed_item.isRawMaterial) if parsed_item.isRawMaterial is not None else False, 
-                            bool(parsed_item.isProduction) if parsed_item.isProduction is not None else False, 
-                            parsed_item.imageUrl, parsed_item.productAlias, parsed_item.categoryID, parsed_item.subCategoryID,
-                            parsed_item.uomID, parsed_item.bomID, parsed_item.pricelistID, parsed_item.minStock, parsed_item.maxStock,
-                            parsed_item.isTrackInventory, parsed_item.description
+                            esb_id, company_id,
+                            parsed_item.productName,
+                            parsed_item.productCode or "",
+                            parsed_item.bomName,
+                            parsed_item.categoryName,
+                            parsed_item.subCategoryName,
+                            parsed_item.categoryTypeName,
+                            parsed_item.flagActive if parsed_item.flagActive is not None else 1,
+                            parsed_item.barcode,
+                            parsed_item.uomName,
+                            parsed_item.purchasePrice,
+                            parsed_item.sellPrice,
+                            parsed_item.stock,
+                            bool(parsed_item.hasVariant) if parsed_item.hasVariant is not None else False,
+                            bool(parsed_item.isRawMaterial) if parsed_item.isRawMaterial is not None else False,
+                            bool(parsed_item.isProduction) if parsed_item.isProduction is not None else False,
+                            parsed_item.imageUrl,
+                            parsed_item.productAlias,
+                            parsed_item.categoryID,
+                            parsed_item.subCategoryID,
+                            parsed_item.uomID,
+                            parsed_item.bomID,
+                            parsed_item.pricelistID,
+                            parsed_item.minStock,
+                            parsed_item.maxStock,
+                            parsed_item.isTrackInventory,
+                            parsed_item.description
                         ))
+
                     elif entity == "CATEGORY":
+                        # categoryCode tidak ada di response, simpan None
                         category_values.append((
-                            esb_id, company_id, parsed_item.categoryCode, parsed_item.categoryName,
-                            parsed_item.categoryTypeName, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
+                            esb_id, company_id,
+                            getattr(parsed_item, 'categoryCode', None),  # None
+                            parsed_item.categoryName,
+                            parsed_item.categoryTypeName,
+                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
                         ))
+
                     elif entity == "PRODUCT_SUB_CATEGORY":
+                        # categoryID & subCategoryCode tidak ada di response list
                         sub_category_values.append((
-                            esb_id, company_id, parsed_item.categoryID, parsed_item.subCategoryCode,
-                            parsed_item.subCategoryName, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
-                            parsed_item.displayOrder
+                            esb_id, company_id,
+                            None,                    # category_esb_id — tidak ada di response
+                            None,                    # code — tidak ada di response
+                            parsed_item.subCategoryName,
+                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
+                            parsed_item.displayOrder  # None
                         ))
+
                     elif entity == "PRODUCT_UNIT":
+                        # metricName sebagai code, uomName sebagai name
                         unit_values.append((
-                            esb_id, company_id, parsed_item.unitCode, parsed_item.unitName, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
+                            esb_id, company_id,
+                            parsed_item.metricName,  # code = nama metrik
+                            parsed_item.uomName,     # name = nama satuan
+                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
                         ))
+
                     elif entity == "BOM":
+                        # productID tidak ada di list endpoint, simpan None
                         bom_values.append((
-                            esb_id, company_id, parsed_item.productID, parsed_item.bomCode,
-                            parsed_item.bomName, parsed_item.outputQty, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
+                            esb_id, company_id,
+                            parsed_item.productID,   # None dari list response
+                            parsed_item.bomCode,
+                            parsed_item.bomName,
+                            parsed_item.outputQty or 1.0,
+                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
                         ))
+
                     elif entity == "BRANCH_PRODUCT":
+                        # Response: productDetailID, productName, uomName, qty, stockQty
+                        # branchID/branchName tidak ada di response ini
                         branch_product_values.append((
-                            esb_id, company_id, parsed_item.branchID, parsed_item.productID,
-                            parsed_item.stock, parsed_item.availableStock, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
-                            parsed_item.productCode, parsed_item.productName, parsed_item.branchName, parsed_item.locationID,
-                            parsed_item.locationName, parsed_item.minStock, parsed_item.maxStock, parsed_item.reservedStock
+                            esb_id, company_id,
+                            None,                          # branch_esb_id — tidak ada
+                            parsed_item.productID,         # None
+                            parsed_item.stockQty or 0,     # stock = stockQty
+                            parsed_item.stockQty or 0,     # available_stock = stockQty
+                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
+                            parsed_item.productCode,       # None
+                            parsed_item.productName,
+                            parsed_item.branchName,        # None
+                            parsed_item.locationID,        # None
+                            parsed_item.locationName,      # None
+                            parsed_item.minStock or 0,
+                            parsed_item.maxStock or 0,
+                            parsed_item.reservedStock or 0
                         ))
+
                     elif entity == "PRICELIST":
+                        # expiredDate dipetakan dari 'expireDate' via AliasChoices
+                        _price_date = parsed_item.priceDate or None
+                        _expired_date = parsed_item.expiredDate or None
+                        # branchID dari applicableBranch jika ada
+                        _branch_id = parsed_item.branchID  # property dari applicableBranch
                         pricelist_values.append((
-                            esb_id, company_id, parsed_item.productID, parsed_item.branchID,
-                            parsed_item.price, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
-                            parsed_item.priceDate if parsed_item.priceDate else None, parsed_item.supplierName, parsed_item.productName, parsed_item.productCode,
-                            parsed_item.unitName, parsed_item.currency, parsed_item.expiredDate if parsed_item.expiredDate else None
+                            esb_id, company_id,
+                            parsed_item.productID,
+                            _branch_id,
+                            parsed_item.price or 0,
+                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
+                            _price_date,
+                            parsed_item.supplierName,
+                            parsed_item.productName,
+                            parsed_item.productCode,
+                            parsed_item.unitName,
+                            parsed_item.currency,
+                            _expired_date
                         ))
+
                     elif entity == "BRANCH":
                         branch_values.append((
-                            esb_id, company_id, parsed_item.branchName, parsed_item.branchCode, True,
-                            parsed_item.locationName, parsed_item.stock, parsed_item.availableStock
+                            esb_id, company_id,
+                            parsed_item.branchName,
+                            parsed_item.branchCode,
+                            parsed_item.isActive if parsed_item.isActive is not None else True,
+                            parsed_item.locationName,
+                            parsed_item.stock,
+                            parsed_item.availableStock
                         ))
+
                     elif entity == "EMPLOYEE":
-                        emp_group = getattr(parsed_item, 'employeeGroup', None)
-                        branch_id = getattr(parsed_item, 'branch_id', 'UNKNOWN')
-                        status = getattr(parsed_item, 'status', 'ACTIVE')
                         employee_values.append((
-                            esb_id, company_id, parsed_item.full_name, parsed_item.position,
-                            emp_group, status, branch_id
+                            esb_id, company_id,
+                            parsed_item.full_name,
+                            parsed_item.position,
+                            getattr(parsed_item, 'employeeGroup', None),
+                            getattr(parsed_item, 'status', 'ACTIVE'),
+                            str(parsed_item.branch_id) if parsed_item.branch_id else 'UNKNOWN'
                         ))
+
                     elif entity == "SUPPLIER":
-                        sup_category = getattr(parsed_item, 'supplierCategory', None)
-                        status = getattr(parsed_item, 'status', 'ACTIVE')
                         supplier_values.append((
-                            esb_id, company_id, parsed_item.name, parsed_item.type,
-                            sup_category, status
+                            esb_id, company_id,
+                            parsed_item.name,
+                            parsed_item.type,
+                            parsed_item.supplierCategory,
+                            getattr(parsed_item, 'status', 'ACTIVE')
                         ))
+
                     total_processed += 1
                 except Exception as ve:
                     dlq_values.append((entity, json.dumps(item), str(ve)))
@@ -411,8 +543,8 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                     ON CONFLICT (company_id, esb_id) DO UPDATE SET
                         product_esb_id = EXCLUDED.product_esb_id, branch_esb_id = EXCLUDED.branch_esb_id,
                         price = EXCLUDED.price, flag_active = EXCLUDED.flag_active,
-                        price_date = NULLIF(EXCLUDED.price_date, ''), supplier_name = EXCLUDED.supplier_name, product_name = EXCLUDED.product_name,
-                        product_code = EXCLUDED.product_code, unit_name = EXCLUDED.unit_name, currency = EXCLUDED.currency, expired_date = NULLIF(EXCLUDED.expired_date, '')
+                        price_date = EXCLUDED.price_date, supplier_name = EXCLUDED.supplier_name, product_name = EXCLUDED.product_name,
+                        product_code = EXCLUDED.product_code, unit_name = EXCLUDED.unit_name, currency = EXCLUDED.currency, expired_date = EXCLUDED.expired_date
                 """, pricelist_values)
 
             if branch_values:
