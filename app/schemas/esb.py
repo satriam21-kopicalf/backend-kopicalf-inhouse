@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from typing import Optional
 
 class ESBGenericModel(BaseModel):
@@ -44,7 +44,7 @@ class ESBCategoryModel(BaseModel):
 
 class ESBSubCategoryModel(BaseModel):
     model_config = ConfigDict(extra='allow')
-    subCategoryID: int = Field(alias='id', default=0)
+    subCategoryID: int = Field(validation_alias=AliasChoices('id', 'subCategoryID'), default=0)
     categoryID: Optional[int] = None
     subCategoryCode: Optional[str] = None
     subCategoryName: str
@@ -52,14 +52,14 @@ class ESBSubCategoryModel(BaseModel):
 
 class ESBUnitModel(BaseModel):
     model_config = ConfigDict(extra='allow')
-    unitID: int = Field(alias='id', default=0)
+    unitID: int = Field(validation_alias=AliasChoices('id', 'unitID'), default=0)
     unitCode: Optional[str] = None
     unitName: str
     flagActive: Optional[int] = Field(default=1)
 
 class ESBBomModel(BaseModel):
     model_config = ConfigDict(extra='allow')
-    bomID: int = Field(alias='id', default=0)
+    bomID: int = Field(validation_alias=AliasChoices('id', 'bomID'), default=0)
     productID: Optional[int] = None
     bomCode: Optional[str] = None
     bomName: str
@@ -68,7 +68,7 @@ class ESBBomModel(BaseModel):
     
 class ESBBranchProductModel(BaseModel):
     model_config = ConfigDict(extra='allow')
-    branchProductID: int = Field(alias='id', default=0)
+    branchProductID: int = Field(validation_alias=AliasChoices('id', 'branchProductID'), default=0)
     branchID: int
     productID: int
     stock: Optional[float] = Field(default=0)
@@ -77,7 +77,7 @@ class ESBBranchProductModel(BaseModel):
 
 class ESBPricelistModel(BaseModel):
     model_config = ConfigDict(extra='allow')
-    pricelistID: int = Field(alias='id', default=0)
+    pricelistID: int = Field(validation_alias=AliasChoices('id', 'pricelistID'), default=0)
     productID: int
     branchID: Optional[int] = None
     price: Optional[float] = Field(default=0)
@@ -86,8 +86,8 @@ class ESBPricelistModel(BaseModel):
 
 class ESBEmployeeModel(BaseModel):
     model_config = ConfigDict(extra='allow')
-    employeeID: int = Field(alias='employeeId', default=0)
-    full_name: str = Field(alias='fullName', default="Unknown")
+    employeeID: int = Field(validation_alias=AliasChoices('employeeId', 'employeeID', 'id'), default=0)
+    full_name: str = Field(validation_alias=AliasChoices('fullName', 'full_name'), default="Unknown")
     position: str = Field(default="STAFF")
     branch_id: str = Field(default="UNKNOWN")
     status: str = Field(default="ACTIVE")
@@ -95,8 +95,8 @@ class ESBEmployeeModel(BaseModel):
 
 class ESBSupplierModel(BaseModel):
     model_config = ConfigDict(extra='allow')
-    supplierID: int = Field(alias='supplierId', default=0)
-    name: str = Field(alias='supplierName', default="Unknown")
+    supplierID: int = Field(validation_alias=AliasChoices('supplierId', 'supplierID', 'id'), default=0)
+    name: str = Field(validation_alias=AliasChoices('supplierName', 'name'), default="Unknown")
     type: Optional[str] = Field(default="GENERAL")
     status: str = Field(default="ACTIVE")
     supplierCategory: Optional[str] = None
