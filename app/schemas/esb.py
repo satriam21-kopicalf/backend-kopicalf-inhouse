@@ -19,20 +19,30 @@ class ESBProductModel(BaseModel):
     productID: int
     productName: str
     productCode: str
+    productAlias: Optional[str] = None
     bomName: Optional[str] = None
+    categoryID: Optional[int] = None
     categoryName: Optional[str] = None
+    subCategoryID: Optional[int] = None
     subCategoryName: Optional[str] = None
     categoryTypeName: Optional[str] = None
     flagActive: Optional[int] = None
     barcode: Optional[str] = None
+    uomID: Optional[int] = None
     uomName: Optional[str] = None
+    bomID: Optional[int] = None
+    pricelistID: Optional[int] = None
     purchasePrice: Optional[float] = None
     sellPrice: Optional[float] = None
+    minStock: Optional[float] = None
+    maxStock: Optional[float] = None
     stock: Optional[float] = None
     hasVariant: Optional[bool] = None
     isRawMaterial: Optional[bool] = None
     isProduction: Optional[bool] = None
+    isTrackInventory: Optional[bool] = None
     imageUrl: Optional[str] = None
+    description: Optional[str] = None
 
 class ESBCategoryModel(BaseModel):
     model_config = ConfigDict(extra='allow')
@@ -48,6 +58,7 @@ class ESBSubCategoryModel(BaseModel):
     categoryID: Optional[int] = None
     subCategoryCode: Optional[str] = None
     subCategoryName: str
+    displayOrder: Optional[int] = None
     flagActive: Optional[int] = Field(default=1)
 
 class ESBUnitModel(BaseModel):
@@ -69,15 +80,31 @@ class ESBBomModel(BaseModel):
 class ESBBranchProductModel(BaseModel):
     model_config = ConfigDict(extra='allow')
     branchProductID: int = Field(validation_alias=AliasChoices('id', 'branchProductID'), default=0)
+    productCode: Optional[str] = None
+    productName: Optional[str] = None
     branchID: int
+    branchName: Optional[str] = None
     productID: int
+    locationID: Optional[int] = None
+    locationName: Optional[str] = None
     stock: Optional[float] = Field(default=0)
+    minStock: Optional[float] = Field(default=0)
+    maxStock: Optional[float] = Field(default=0)
+    reservedStock: Optional[float] = Field(default=0)
     availableStock: Optional[float] = Field(default=0)
     flagActive: Optional[int] = Field(default=1)
 
 class ESBPricelistModel(BaseModel):
     model_config = ConfigDict(extra='allow')
     pricelistID: int = Field(validation_alias=AliasChoices('id', 'pricelistID'), default=0)
+    priceDate: Optional[str] = None
+    supplierName: Optional[str] = None
+    branchName: Optional[str] = None
+    productName: Optional[str] = None
+    productCode: Optional[str] = None
+    unitName: Optional[str] = None
+    currency: Optional[str] = None
+    expiredDate: Optional[str] = None
     productID: int
     branchID: Optional[int] = None
     price: Optional[float] = Field(default=0)

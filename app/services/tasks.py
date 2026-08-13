@@ -258,7 +258,9 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                             bool(parsed_item.hasVariant) if parsed_item.hasVariant is not None else False, 
                             bool(parsed_item.isRawMaterial) if parsed_item.isRawMaterial is not None else False, 
                             bool(parsed_item.isProduction) if parsed_item.isProduction is not None else False, 
-                            parsed_item.imageUrl
+                            parsed_item.imageUrl, parsed_item.productAlias, parsed_item.categoryID, parsed_item.subCategoryID,
+                            parsed_item.uomID, parsed_item.bomID, parsed_item.pricelistID, parsed_item.minStock, parsed_item.maxStock,
+                            parsed_item.isTrackInventory, parsed_item.description
                         ))
                     elif entity == "CATEGORY":
                         category_values.append((
@@ -268,7 +270,8 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                     elif entity == "PRODUCT_SUB_CATEGORY":
                         sub_category_values.append((
                             esb_id, company_id, parsed_item.categoryID, parsed_item.subCategoryCode,
-                            parsed_item.subCategoryName, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
+                            parsed_item.subCategoryName, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
+                            parsed_item.displayOrder
                         ))
                     elif entity == "PRODUCT_UNIT":
                         unit_values.append((
@@ -282,12 +285,16 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                     elif entity == "BRANCH_PRODUCT":
                         branch_product_values.append((
                             esb_id, company_id, parsed_item.branchID, parsed_item.productID,
-                            parsed_item.stock, parsed_item.availableStock, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
+                            parsed_item.stock, parsed_item.availableStock, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
+                            parsed_item.productCode, parsed_item.productName, parsed_item.branchName, parsed_item.locationID,
+                            parsed_item.locationName, parsed_item.minStock, parsed_item.maxStock, parsed_item.reservedStock
                         ))
                     elif entity == "PRICELIST":
                         pricelist_values.append((
                             esb_id, company_id, parsed_item.productID, parsed_item.branchID,
-                            parsed_item.price, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
+                            parsed_item.price, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
+                            parsed_item.priceDate, parsed_item.supplierName, parsed_item.productName, parsed_item.productCode,
+                            parsed_item.unitName, parsed_item.currency, parsed_item.expiredDate
                         ))
                     elif entity == "BRANCH":
                         branch_values.append((
@@ -329,7 +336,8 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                     INSERT INTO md_products (
                         esb_id, company_id, name, product_code, bom_name, category_name, sub_category_name, category_type_name, 
                         flag_active, barcode, uom_name, purchase_price, sell_price, stock, has_variant, 
-                        is_raw_material, is_production, image_url
+                        is_raw_material, is_production, image_url, product_alias, category_id, sub_category_id,
+                        uom_id, bom_id, pricelist_id, min_stock, max_stock, is_track_inventory, description
                     )
                     VALUES %s
                     ON CONFLICT (company_id, esb_id) DO UPDATE SET
@@ -338,7 +346,10 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                         category_type_name = EXCLUDED.category_type_name, flag_active = EXCLUDED.flag_active,
                         barcode = EXCLUDED.barcode, uom_name = EXCLUDED.uom_name, purchase_price = EXCLUDED.purchase_price,
                         sell_price = EXCLUDED.sell_price, stock = EXCLUDED.stock, has_variant = EXCLUDED.has_variant,
-                        is_raw_material = EXCLUDED.is_raw_material, is_production = EXCLUDED.is_production, image_url = EXCLUDED.image_url
+                        is_raw_material = EXCLUDED.is_raw_material, is_production = EXCLUDED.is_production, image_url = EXCLUDED.image_url,
+                        product_alias = EXCLUDED.product_alias, category_id = EXCLUDED.category_id, sub_category_id = EXCLUDED.sub_category_id,
+                        uom_id = EXCLUDED.uom_id, bom_id = EXCLUDED.bom_id, pricelist_id = EXCLUDED.pricelist_id, min_stock = EXCLUDED.min_stock,
+                        max_stock = EXCLUDED.max_stock, is_track_inventory = EXCLUDED.is_track_inventory, description = EXCLUDED.description
                 """, product_values)
             
             if category_values:
@@ -353,10 +364,11 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
             if sub_category_values:
                 sub_category_values = list({v[0]: v for v in sub_category_values}.values())
                 execute_values(cur, """
-                    INSERT INTO md_sub_categories (esb_id, company_id, category_esb_id, code, name, flag_active)
+                    INSERT INTO md_sub_categories (esb_id, company_id, category_esb_id, code, name, flag_active, display_order)
                     VALUES %s
                     ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                        category_esb_id = EXCLUDED.category_esb_id, code = EXCLUDED.code, name = EXCLUDED.name, flag_active = EXCLUDED.flag_active
+                        category_esb_id = EXCLUDED.category_esb_id, code = EXCLUDED.code, name = EXCLUDED.name, flag_active = EXCLUDED.flag_active,
+                        display_order = EXCLUDED.display_order
                 """, sub_category_values)
 
             if unit_values:
@@ -380,21 +392,28 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
             if branch_product_values:
                 branch_product_values = list({v[0]: v for v in branch_product_values}.values())
                 execute_values(cur, """
-                    INSERT INTO md_branch_products (esb_id, company_id, branch_esb_id, product_esb_id, stock, available_stock, flag_active)
+                    INSERT INTO md_branch_products (esb_id, company_id, branch_esb_id, product_esb_id, stock, available_stock, flag_active,
+                        product_code, product_name, branch_name, location_id, location_name, min_stock, max_stock, reserved_stock)
                     VALUES %s
                     ON CONFLICT (company_id, esb_id) DO UPDATE SET
                         branch_esb_id = EXCLUDED.branch_esb_id, product_esb_id = EXCLUDED.product_esb_id,
-                        stock = EXCLUDED.stock, available_stock = EXCLUDED.available_stock, flag_active = EXCLUDED.flag_active
+                        stock = EXCLUDED.stock, available_stock = EXCLUDED.available_stock, flag_active = EXCLUDED.flag_active,
+                        product_code = EXCLUDED.product_code, product_name = EXCLUDED.product_name, branch_name = EXCLUDED.branch_name,
+                        location_id = EXCLUDED.location_id, location_name = EXCLUDED.location_name, min_stock = EXCLUDED.min_stock,
+                        max_stock = EXCLUDED.max_stock, reserved_stock = EXCLUDED.reserved_stock
                 """, branch_product_values)
 
             if pricelist_values:
                 pricelist_values = list({v[0]: v for v in pricelist_values}.values())
                 execute_values(cur, """
-                    INSERT INTO md_pricelists (esb_id, company_id, product_esb_id, branch_esb_id, price, flag_active)
+                    INSERT INTO md_pricelists (esb_id, company_id, product_esb_id, branch_esb_id, price, flag_active,
+                        price_date, supplier_name, product_name, product_code, unit_name, currency, expired_date)
                     VALUES %s
                     ON CONFLICT (company_id, esb_id) DO UPDATE SET
                         product_esb_id = EXCLUDED.product_esb_id, branch_esb_id = EXCLUDED.branch_esb_id,
-                        price = EXCLUDED.price, flag_active = EXCLUDED.flag_active
+                        price = EXCLUDED.price, flag_active = EXCLUDED.flag_active,
+                        price_date = NULLIF(EXCLUDED.price_date, ''), supplier_name = EXCLUDED.supplier_name, product_name = EXCLUDED.product_name,
+                        product_code = EXCLUDED.product_code, unit_name = EXCLUDED.unit_name, currency = EXCLUDED.currency, expired_date = NULLIF(EXCLUDED.expired_date, '')
                 """, pricelist_values)
 
             if branch_values:
