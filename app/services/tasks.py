@@ -141,13 +141,7 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
         error_msg = ""
         
         fetch_queue = []
-        if entity == "BRANCH_PRODUCT":
-            cur.execute("SELECT esb_id FROM md_products WHERE company_id = %s", (company_id,))
-            product_ids = [row['esb_id'] for row in cur.fetchall()]
-            for pid in product_ids:
-                fetch_queue.append({"productDetailID": pid, "page": 1, "limit": batch_size})
-        else:
-            fetch_queue.append({"page": 1, "limit": batch_size})
+        fetch_queue.append({"page": 1, "limit": batch_size})
             
         while fetch_queue:
             params = fetch_queue.pop(0)
