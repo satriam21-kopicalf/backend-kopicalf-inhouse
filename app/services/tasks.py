@@ -165,7 +165,7 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                     records = data
                 elif isinstance(data, dict):
                     pagination = data.get('pagination', {})
-                    if pagination:
+                    if pagination and isinstance(pagination, dict):
                         total_pages = pagination.get('totalPages', 1)
                         
                     result_obj = data.get('result', [])
