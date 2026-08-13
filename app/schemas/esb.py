@@ -37,8 +37,52 @@ class ESBProductModel(BaseModel):
 class ESBCategoryModel(BaseModel):
     model_config = ConfigDict(extra='allow')
     categoryID: int
+    categoryCode: Optional[str] = None
     categoryName: str
-    status: str = Field(default="ACTIVE")
+    categoryTypeName: Optional[str] = None
+    flagActive: Optional[int] = Field(default=1)
+
+class ESBSubCategoryModel(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    subCategoryID: int = Field(alias='id', default=0)
+    categoryID: Optional[int] = None
+    subCategoryCode: Optional[str] = None
+    subCategoryName: str
+    flagActive: Optional[int] = Field(default=1)
+
+class ESBUnitModel(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    unitID: int = Field(alias='id', default=0)
+    unitCode: Optional[str] = None
+    unitName: str
+    flagActive: Optional[int] = Field(default=1)
+
+class ESBBomModel(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    bomID: int = Field(alias='id', default=0)
+    productID: Optional[int] = None
+    bomCode: Optional[str] = None
+    bomName: str
+    outputQty: Optional[float] = Field(default=1.0)
+    flagActive: Optional[int] = Field(default=1)
+    
+class ESBBranchProductModel(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    branchProductID: int = Field(alias='id', default=0)
+    branchID: int
+    productID: int
+    stock: Optional[float] = Field(default=0)
+    availableStock: Optional[float] = Field(default=0)
+    flagActive: Optional[int] = Field(default=1)
+
+class ESBPricelistModel(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    pricelistID: int = Field(alias='id', default=0)
+    productID: int
+    branchID: Optional[int] = None
+    price: Optional[float] = Field(default=0)
+    flagActive: Optional[int] = Field(default=1)
+
 
 class ESBEmployeeModel(BaseModel):
     model_config = ConfigDict(extra='allow')

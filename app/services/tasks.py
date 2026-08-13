@@ -6,7 +6,11 @@ from datetime import datetime, timezone, timedelta
 from psycopg2.extras import execute_values, DictCursor
 from app.core.worker import celery_app
 from app.core.db import get_db_connection
-from app.schemas.esb import ESBProductModel, ESBCategoryModel, ESBBranchModel, ESBEmployeeModel, ESBSupplierModel, ESBGenericModel
+from app.schemas.esb import (
+    ESBProductModel, ESBCategoryModel, ESBSubCategoryModel, ESBUnitModel, 
+    ESBBomModel, ESBBranchProductModel, ESBPricelistModel, 
+    ESBBranchModel, ESBEmployeeModel, ESBSupplierModel, ESBGenericModel
+)
 import pytz
 
 ESB_API_BASE_URL = os.getenv("ESB_CORE_URL", "https://stg7.esb.co.id/core-stg")
@@ -57,12 +61,12 @@ def get_all_endpoints():
         {"entity": "EMPLOYEE", "path": "/employee", "schema": ESBEmployeeModel},
         {"entity": "SUPPLIER", "path": "/supplier", "schema": ESBSupplierModel},
         
-        {"entity": "PRODUCT_SUB_CATEGORY", "path": "/product/subcategory", "schema": ESBGenericModel},
-        {"entity": "PRODUCT_UNIT", "path": "/product/unit", "schema": ESBGenericModel},
-        {"entity": "BRANCH_PRODUCT", "path": "/product/branch", "schema": ESBGenericModel},
-        {"entity": "PRICELIST", "path": "/product/pricelist", "schema": ESBGenericModel},
+        {"entity": "PRODUCT_SUB_CATEGORY", "path": "/product/subcategory", "schema": ESBSubCategoryModel},
+        {"entity": "PRODUCT_UNIT", "path": "/product/unit", "schema": ESBUnitModel},
+        {"entity": "BRANCH_PRODUCT", "path": "/product/branch", "schema": ESBBranchProductModel},
+        {"entity": "PRICELIST", "path": "/product/pricelist", "schema": ESBPricelistModel},
         {"entity": "CUSTOMER_PRICELIST", "path": "/product/customer_pricelist", "schema": ESBGenericModel},
-        {"entity": "BOM", "path": "/product/bom", "schema": ESBGenericModel},
+        {"entity": "BOM", "path": "/product/bom", "schema": ESBBomModel},
         {"entity": "DOCUMENT_TEMPLATE", "path": "/product/document_template", "schema": ESBGenericModel},
         {"entity": "FOOD_COST_CALC", "path": "/product/food_cost_calc", "schema": ESBGenericModel},
         
@@ -178,6 +182,12 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
             
             staging_values = []
             product_values = []
+            category_values = []
+            sub_category_values = []
+            unit_values = []
+            bom_values = []
+            branch_product_values = []
+            pricelist_values = []
             branch_values = []
             employee_values = []
             supplier_values = []
@@ -190,8 +200,18 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                         esb_id = str(parsed_item.productID)
                     elif entity == "BRANCH":
                         esb_id = str(parsed_item.branchID)
-                    elif entity == "PROD_CATEGORY":
+                    elif entity == "CATEGORY":
                         esb_id = str(parsed_item.categoryID)
+                    elif entity == "PRODUCT_SUB_CATEGORY":
+                        esb_id = str(parsed_item.subCategoryID)
+                    elif entity == "PRODUCT_UNIT":
+                        esb_id = str(parsed_item.unitID)
+                    elif entity == "BOM":
+                        esb_id = str(parsed_item.bomID)
+                    elif entity == "BRANCH_PRODUCT":
+                        esb_id = str(parsed_item.branchProductID)
+                    elif entity == "PRICELIST":
+                        esb_id = str(parsed_item.pricelistID)
                     elif entity == "EMPLOYEE":
                         esb_id = str(parsed_item.employeeID)
                     elif entity == "SUPPLIER":
@@ -211,6 +231,35 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                             parsed_item.purchasePrice, parsed_item.sellPrice, parsed_item.stock, 
                             parsed_item.hasVariant, parsed_item.isRawMaterial, parsed_item.isProduction, 
                             parsed_item.imageUrl
+                        ))
+                    elif entity == "CATEGORY":
+                        category_values.append((
+                            esb_id, company_id, parsed_item.categoryCode, parsed_item.categoryName,
+                            parsed_item.categoryTypeName, parsed_item.flagActive
+                        ))
+                    elif entity == "PRODUCT_SUB_CATEGORY":
+                        sub_category_values.append((
+                            esb_id, company_id, parsed_item.categoryID, parsed_item.subCategoryCode,
+                            parsed_item.subCategoryName, parsed_item.flagActive
+                        ))
+                    elif entity == "PRODUCT_UNIT":
+                        unit_values.append((
+                            esb_id, company_id, parsed_item.unitCode, parsed_item.unitName, parsed_item.flagActive
+                        ))
+                    elif entity == "BOM":
+                        bom_values.append((
+                            esb_id, company_id, parsed_item.productID, parsed_item.bomCode,
+                            parsed_item.bomName, parsed_item.outputQty, parsed_item.flagActive
+                        ))
+                    elif entity == "BRANCH_PRODUCT":
+                        branch_product_values.append((
+                            esb_id, company_id, parsed_item.branchID, parsed_item.productID,
+                            parsed_item.stock, parsed_item.availableStock, parsed_item.flagActive
+                        ))
+                    elif entity == "PRICELIST":
+                        pricelist_values.append((
+                            esb_id, company_id, parsed_item.productID, parsed_item.branchID,
+                            parsed_item.price, parsed_item.flagActive
                         ))
                     elif entity == "BRANCH":
                         branch_values.append((
@@ -262,6 +311,54 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                         is_raw_material = EXCLUDED.is_raw_material, is_production = EXCLUDED.is_production, image_url = EXCLUDED.image_url
                 """, product_values)
             
+            if category_values:
+                execute_values(cur, """
+                    INSERT INTO md_categories (esb_id, company_id, code, name, type_name, flag_active)
+                    VALUES %s
+                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                        code = EXCLUDED.code, name = EXCLUDED.name, type_name = EXCLUDED.type_name, flag_active = EXCLUDED.flag_active
+                """, category_values)
+
+            if sub_category_values:
+                execute_values(cur, """
+                    INSERT INTO md_sub_categories (esb_id, company_id, category_esb_id, code, name, flag_active)
+                    VALUES %s
+                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                        category_esb_id = EXCLUDED.category_esb_id, code = EXCLUDED.code, name = EXCLUDED.name, flag_active = EXCLUDED.flag_active
+                """, sub_category_values)
+
+            if unit_values:
+                execute_values(cur, """
+                    INSERT INTO md_units (esb_id, company_id, code, name, flag_active)
+                    VALUES %s
+                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                        code = EXCLUDED.code, name = EXCLUDED.name, flag_active = EXCLUDED.flag_active
+                """, unit_values)
+
+            if bom_values:
+                execute_values(cur, """
+                    INSERT INTO md_boms (esb_id, company_id, product_esb_id, code, name, output_qty, flag_active)
+                    VALUES %s
+                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                        product_esb_id = EXCLUDED.product_esb_id, code = EXCLUDED.code, name = EXCLUDED.name, output_qty = EXCLUDED.output_qty, flag_active = EXCLUDED.flag_active
+                """, bom_values)
+
+            if branch_product_values:
+                execute_values(cur, """
+                    INSERT INTO md_branch_products (esb_id, company_id, branch_esb_id, product_esb_id, stock, available_stock, flag_active)
+                    VALUES %s
+                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                        branch_esb_id = EXCLUDED.branch_esb_id, product_esb_id = EXCLUDED.product_esb_id, stock = EXCLUDED.stock, available_stock = EXCLUDED.available_stock, flag_active = EXCLUDED.flag_active
+                """, branch_product_values)
+
+            if pricelist_values:
+                execute_values(cur, """
+                    INSERT INTO md_pricelists (esb_id, company_id, product_esb_id, branch_esb_id, price, flag_active)
+                    VALUES %s
+                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                        product_esb_id = EXCLUDED.product_esb_id, branch_esb_id = EXCLUDED.branch_esb_id, price = EXCLUDED.price, flag_active = EXCLUDED.flag_active
+                """, pricelist_values)
+
             if branch_values:
                 execute_values(cur, """
                     INSERT INTO md_outlets (esb_id, company_id, name, branch_code, is_active, location_name, stock, available_stock)
@@ -408,7 +505,7 @@ def sync_master_data_router():
         
         target_interval = morning_interval if is_morning_window else work_interval
         
-        cur.execute("SELECT completed_at FROM sync_history WHERE entity_type = 'MASTER_DATA_ALL' AND status = 'SUCCESS' ORDER BY id DESC LIMIT 1")
+        cur.execute("SELECT completed_at FROM sync_history WHERE entity_type = 'SYSTEM_SYNC_TRACKER' AND status = 'SUCCESS' ORDER BY id DESC LIMIT 1")
         last_sync = typing.cast(typing.Any, cur.fetchone())
         
         should_run = False
@@ -424,7 +521,7 @@ def sync_master_data_router():
             print(f"Triggering sync_master_data. Interval matched: {target_interval} minutes.")
             
             # Create a master record to record the fact we triggered it (so the interval works)
-            cur.execute("INSERT INTO sync_history (entity_type, status, completed_at) VALUES ('MASTER_DATA_ALL', 'SUCCESS', %s)", (datetime.now(timezone.utc),))
+            cur.execute("INSERT INTO sync_history (entity_type, status, completed_at) VALUES ('SYSTEM_SYNC_TRACKER', 'SUCCESS', %s)", (datetime.now(timezone.utc),))
             conn.commit()
             
             sync_master_data.delay()
