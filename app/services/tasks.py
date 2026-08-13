@@ -293,8 +293,8 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                         pricelist_values.append((
                             esb_id, company_id, parsed_item.productID, parsed_item.branchID,
                             parsed_item.price, bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
-                            parsed_item.priceDate, parsed_item.supplierName, parsed_item.productName, parsed_item.productCode,
-                            parsed_item.unitName, parsed_item.currency, parsed_item.expiredDate
+                            parsed_item.priceDate if parsed_item.priceDate else None, parsed_item.supplierName, parsed_item.productName, parsed_item.productCode,
+                            parsed_item.unitName, parsed_item.currency, parsed_item.expiredDate if parsed_item.expiredDate else None
                         ))
                     elif entity == "BRANCH":
                         branch_values.append((
