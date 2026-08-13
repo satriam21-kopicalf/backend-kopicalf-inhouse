@@ -27,6 +27,10 @@ def deploy_to_vps():
     print("Uploading app/services/tasks.py...")
     sftp.put(r"d:\kopicalf-projection\be-kopicalf-inhouse\app\services\tasks.py", "/root/be-kopicalf-inhouse/app/services/tasks.py")
     
+    # Upload esb.py schema
+    print("Uploading app/schemas/esb.py...")
+    sftp.put(r"d:\kopicalf-projection\be-kopicalf-inhouse\app\schemas\esb.py", "/root/be-kopicalf-inhouse/app/schemas/esb.py")
+    
     # Upload .env
     print("Uploading .env...")
     sftp.put(r"d:\kopicalf-projection\be-kopicalf-inhouse\.env", "/root/be-kopicalf-inhouse/.env")
