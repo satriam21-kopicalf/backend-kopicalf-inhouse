@@ -227,7 +227,7 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                         product_values.append((
                             esb_id, company_id, parsed_item.productName, parsed_item.productCode, parsed_item.bomName, 
                             parsed_item.categoryName, parsed_item.subCategoryName, parsed_item.categoryTypeName, 
-                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True, parsed_item.barcode, parsed_item.uomName, 
+                            parsed_item.flagActive if parsed_item.flagActive is not None else 1, parsed_item.barcode, parsed_item.uomName, 
                             parsed_item.purchasePrice, parsed_item.sellPrice, parsed_item.stock, 
                             bool(parsed_item.hasVariant) if parsed_item.hasVariant is not None else False, 
                             bool(parsed_item.isRawMaterial) if parsed_item.isRawMaterial is not None else False, 
