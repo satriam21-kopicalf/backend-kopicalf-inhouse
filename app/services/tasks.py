@@ -103,7 +103,6 @@ def get_all_endpoints():
     ]
 
 
-@celery_app.task
 def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, date_from: typing.Optional[str] = None, date_to: typing.Optional[str] = None):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -474,6 +473,30 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
 
 
 @celery_app.task
+def sync_company_data(company_id: int, esb_token: str, historical_start: str, today_str: str):
+    endpoints = get_all_endpoints()
+    for ep in endpoints:
+        entity = ep["entity"]
+        path = ep["path"]
+        is_report = ep.get("is_report", False)
+        
+        # For reports, pass date ranges
+        d_from = historical_start if is_report else None
+        d_to = today_str if is_report else None
+        
+        try:
+            sync_endpoint_data(
+                company_id=company_id,
+                esb_token=esb_token,
+                entity=entity,
+                path=path,
+                date_from=d_from,
+                date_to=d_to
+            )
+        except Exception as e:
+            print(f"Error syncing {entity} sequentially: {e}")
+
+@celery_app.task
 def sync_master_data():
     """
     Backwards compatible trigger that acts as the router to spawn subtasks for ALL companies.
@@ -515,24 +538,7 @@ def sync_master_data():
             if not esb_token:
                 continue
                 
-            endpoints = get_all_endpoints()
-            for ep in endpoints:
-                entity = ep["entity"]
-                path = ep["path"]
-                is_report = ep.get("is_report", False)
-                
-                # For reports, pass date ranges
-                d_from = historical_start if is_report else None
-                d_to = today_str if is_report else None
-                
-                sync_endpoint_data.delay(
-                    company_id=company_id,
-                    esb_token=esb_token,
-                    entity=entity,
-                    path=path,
-                    date_from=d_from,
-                    date_to=d_to
-                )
+            sync_company_data.delay(company_id, esb_token, historical_start, today_str)
     finally:
         cur.close()
         conn.close()
