@@ -15,6 +15,29 @@ import pytz
 
 ESB_API_BASE_URL = os.getenv("ESB_CORE_URL", "https://stg7.esb.co.id/core-stg")
 
+# Per-endpoint max limit configuration (to prevent 400 errors)
+ENDPOINT_MAX_LIMITS = {
+    "/units": 1000,  # /units max limit = 1000
+    "/product/list": 5000,  # /product/list max limit = 5000
+    "/product/category": 5000,
+    "/product/sub-category": 5000,
+    "/pricelist": 5000,
+    "/product/bom": 5000,
+    "/branch": 5000,
+    "/employee": 5000,
+    "/supplier": 5000,
+    "/document-template": 5000,
+    "/customer-pricelist": 5000,
+    # Default for unknown endpoints
+    "default": 1000
+}
+
+def _get_endpoint_max_limit(path: str) -> int:
+    """Get the maximum allowed limit for a specific endpoint."""
+    return ENDPOINT_MAX_LIMITS.get(path, ENDPOINT_MAX_LIMITS["default"])
+
+
+
 def _refresh_esb_token() -> typing.Optional[str]:
     """Login ulang ke ESB dan kembalikan token baru. Return None jika gagal."""
     esb_user = os.getenv("ESB_CORE_USERNAME")
@@ -141,6 +164,117 @@ def get_all_endpoints():
     ]
 
 
+
+
+def sync_product_details(company_id: int, client: ESBClient, conn, cur) -> dict:
+    """Sync product details by calling /product/{id} for each product."""
+    result = {
+        "success": True,
+        "processed": 0,
+        "errors": 0,
+        "error_msg": ""
+    }
+    
+    try:
+        # Get all product IDs that need detail sync (those with NULL critical fields)
+        cur.execute("""
+            SELECT DISTINCT esb_id 
+            FROM md_products 
+            WHERE company_id = %s 
+              AND (sell_price IS NULL OR purchase_price IS NULL OR stock IS NULL OR 
+                   barcode IS NULL OR uom_name IS NULL OR description IS NULL)
+        """, (company_id,))
+        
+        products_to_sync = [row['esb_id'] for row in cur.fetchall()]
+        
+        if not products_to_sync:
+            result["error_msg"] = "No products require detail sync"
+            return result
+        
+        total = len(products_to_sync)
+        success_count = 0
+        error_count = 0
+        
+        for i, product_esb_id in enumerate(products_to_sync):
+            try:
+                # Call product detail endpoint
+                detail_response = client.get(f"/product/{product_esb_id}")
+                
+                if detail_response and isinstance(detail_response, dict):
+                    product_data = detail_response.get('result', {})
+                    
+                    if product_data:
+                        # Extract fields from product detail response
+                        product_name = product_data.get('productName') or ""
+                        product_code = product_data.get('productCode') or ""
+                        barcode = product_data.get('barcode')
+                        description = product_data.get('description')
+                        
+                        # Extract from productDetails array if available
+                        product_details = product_data.get('productDetails', [])
+                        if product_details and isinstance(product_details, list) and len(product_details) > 0:
+                            first_detail = product_details[0]
+                            uom_name = first_detail.get('uomName')
+                            purchase_price = first_detail.get('basePrice') or first_detail.get('purchasePrice')
+                            sell_price = first_detail.get('sellPrice')
+                            stock = first_detail.get('stock')
+                            uom_id = first_detail.get('uomID')
+                        else:
+                            # Fallback to top-level fields if no productDetails
+                            uom_name = product_data.get('uomName')
+                            purchase_price = product_data.get('purchasePrice')
+                            sell_price = product_data.get('sellPrice')
+                            stock = product_data.get('stock')
+                            uom_id = product_data.get('uomID')
+                        
+                        # Update the product record with detailed information
+                        cur.execute("""
+                            UPDATE md_products 
+                            SET 
+                                name = COALESCE(%s, name),
+                                product_code = COALESCE(%s, product_code),
+                                barcode = COALESCE(%s, barcode),
+                                uom_name = COALESCE(%s, uom_name),
+                                purchase_price = COALESCE(%s, purchase_price),
+                                sell_price = COALESCE(%s, sell_price),
+                                stock = COALESCE(%s, stock),
+                                uom_id = COALESCE(%s, uom_id),
+                                description = COALESCE(%s, description),
+                                updated_at = NOW()
+                            WHERE company_id = %s AND esb_id = %s
+                        """, (
+                            product_name, product_code, barcode, uom_name,
+                            purchase_price, sell_price, stock, uom_id, description,
+                            company_id, product_esb_id
+                        ))
+                        
+                        success_count += 1
+                        
+                        # Log progress every 10 products
+                        if (i + 1) % 10 == 0:
+                            print(f"Product detail sync progress: {i+1}/{total} ({(i+1)/total*100:.1f}%)")
+                
+            except Exception as e:
+                error_count += 1
+                print(f"Error syncing product detail for ID {product_esb_id}: {e}")
+                # Continue with other products even if one fails
+        
+        conn.commit()
+        
+        result["processed"] = success_count
+        result["errors"] = error_count
+        result["error_msg"] = f"Processed {success_count}/{total} products, {error_count} errors"
+        
+        if error_count > 0:
+            result["success"] = False
+            
+    except Exception as e:
+        result["success"] = False
+        result["error_msg"] = f"Product detail sync failed: {e}"
+        print(f"Product detail sync error: {e}")
+    
+    return result
+
 def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, date_from: typing.Optional[str] = None, date_to: typing.Optional[str] = None):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
@@ -162,6 +296,13 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
         cur.execute("SELECT sync_batch_size FROM engine_settings WHERE id = 1")
         settings = typing.cast(dict[str, typing.Any] | None, cur.fetchone())
         batch_size = settings['sync_batch_size'] if settings else 1000
+        
+        # Apply per-endpoint max limit constraint
+        max_limit = _get_endpoint_max_limit(path)
+        effective_batch_size = min(batch_size, max_limit)
+        
+        if effective_batch_size != batch_size:
+            print(f"Adjusting batch size for {path}: {batch_size} -> {effective_batch_size} (max limit: {max_limit})")
 
         cur.execute(
             "INSERT INTO sync_history (entity_type, status, company_id) VALUES (%s, %s, %s) RETURNING id",
@@ -189,12 +330,12 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
             """, (company_id,))
             product_detail_ids = [row['pd_id'] for row in cur.fetchall() if row['pd_id']]
             for pd_id in product_detail_ids:
-                fetch_queue.append({"productDetailID": pd_id, "page": 1, "limit": batch_size})
+                fetch_queue.append({"productDetailID": pd_id, "page": 1, "limit": effective_batch_size})
             if not product_detail_ids:
                 error_msg = "No product details found. Please ensure PRICELIST is synced first."
                 has_error = True
         else:
-            fetch_queue.append({"page": 1, "limit": batch_size})
+            fetch_queue.append({"page": 1, "limit": effective_batch_size})
             
         while fetch_queue:
             params = fetch_queue.pop(0)
@@ -222,7 +363,7 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                         records = result_obj.get('data', [])
                         if not pagination and 'count' in result_obj:
                             import math
-                            total_pages = math.ceil(result_obj['count'] / batch_size)
+                            total_pages = math.ceil(result_obj['count'] / effective_batch_size)
                     else:
                         records = []
                 else:
@@ -253,6 +394,8 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
             branch_values = []
             employee_values = []
             supplier_values = []
+            document_template_values = []
+            customer_pricelist_values = []
             dlq_values = []
             
             for item in records:
@@ -289,6 +432,18 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                         esb_id = str(parsed_item.employeeID)
                     elif entity == "SUPPLIER":
                         esb_id = str(parsed_item.supplierID)
+                    elif entity == "DOCUMENT_TEMPLATE" or entity == "CUSTOMER_PRICELIST":
+                        # For generic models, try common ID fields
+                        esb_id_val = (
+                            item.get('id') or item.get('ID') or
+                            item.get('templateID') or item.get('customerPricelistID') or
+                            item.get('pricelistID') or item.get('documentID') or
+                            str(hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest())
+                        )
+                        esb_id = str(esb_id_val) if esb_id_val else "unknown"
+                        if esb_id == "unknown":
+                            import hashlib
+                            esb_id = hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
                     else:
                         esb_id_val = (
                             item.get('id') or item.get('ID') or
@@ -447,19 +602,60 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                             getattr(parsed_item, 'status', 'ACTIVE')
                         ))
 
+                    elif entity == "DOCUMENT_TEMPLATE":
+                        # Extract document template fields from generic model
+                        template_name = item.get('templateName') or item.get('name') or ""
+                        template_code = item.get('templateCode') or item.get('code') or ""
+                        document_type = item.get('documentType') or item.get('type') or ""
+                        document_template_values.append((
+                            esb_id, company_id,
+                            template_name,
+                            document_type,
+                            template_code,
+                            bool(item.get('flagActive', 1))
+                        ))
+
+                    elif entity == "CUSTOMER_PRICELIST":
+                        # Extract customer pricelist fields from generic model
+                        customer_name = item.get('customerName') or ""
+                        product_name = item.get('productName') or ""
+                        product_code = item.get('productCode') or ""
+                        uom_name = item.get('uomName') or item.get('unit') or ""
+                        currency_name = item.get('currencyName') or item.get('currency') or ""
+                        price = item.get('price', 0) or 0
+                        price_date = item.get('priceDate') or None
+                        expire_date = item.get('expireDate') or item.get('expiredDate') or None
+                        customer_pricelist_values.append((
+                            esb_id, company_id,
+                            customer_name,
+                            product_name,
+                            product_code,
+                            uom_name,
+                            currency_name,
+                            price,
+                            price_date,
+                            expire_date,
+                            bool(item.get('flagActive', 1))
+                        ))
+
                     total_processed += 1
                 except Exception as ve:
                     dlq_values.append((entity, json.dumps(item), str(ve)))
             
             if staging_values:
                 staging_values = list({(v[0], v[1], v[2]): v for v in staging_values}.values())
-                execute_values(cur, """
-                    INSERT INTO esb_raw_staging (entity_type, esb_id, company_id, raw_data, updated_at)
-                    VALUES %s
-                    ON CONFLICT (company_id, entity_type, esb_id) DO UPDATE SET
-                        raw_data = EXCLUDED.raw_data,
-                        updated_at = EXCLUDED.updated_at
-                """, staging_values)
+                try:
+                    execute_values(cur, """
+                        INSERT INTO esb_raw_staging (entity_type, esb_id, company_id, raw_data, updated_at)
+                        VALUES %s
+                        ON CONFLICT (company_id, entity_type, esb_id) DO UPDATE SET
+                            raw_data = EXCLUDED.raw_data,
+                            updated_at = EXCLUDED.updated_at
+                    """, staging_values, page_size=500)
+                except Exception as e:
+                    print(f"Error inserting staging values: {e}")
+                    has_error = True
+                    error_msg = f"Staging insert failed: {e}"
             
             if product_values:
                 product_values = list({v[0]: v for v in product_values}.values())
@@ -536,16 +732,21 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
 
             if pricelist_values:
                 pricelist_values = list({v[0]: v for v in pricelist_values}.values())
-                execute_values(cur, """
-                    INSERT INTO md_pricelists (esb_id, company_id, product_esb_id, branch_esb_id, price, flag_active,
-                        price_date, supplier_name, product_name, product_code, unit_name, currency, expired_date)
-                    VALUES %s
-                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                        product_esb_id = EXCLUDED.product_esb_id, branch_esb_id = EXCLUDED.branch_esb_id,
-                        price = EXCLUDED.price, flag_active = EXCLUDED.flag_active,
-                        price_date = EXCLUDED.price_date, supplier_name = EXCLUDED.supplier_name, product_name = EXCLUDED.product_name,
-                        product_code = EXCLUDED.product_code, unit_name = EXCLUDED.unit_name, currency = EXCLUDED.currency, expired_date = EXCLUDED.expired_date
-                """, pricelist_values)
+                try:
+                    execute_values(cur, """
+                        INSERT INTO md_pricelists (esb_id, company_id, product_esb_id, branch_esb_id, price, flag_active,
+                            price_date, supplier_name, product_name, product_code, unit_name, currency, expired_date)
+                        VALUES %s
+                        ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                            product_esb_id = EXCLUDED.product_esb_id, branch_esb_id = EXCLUDED.branch_esb_id,
+                            price = EXCLUDED.price, flag_active = EXCLUDED.flag_active,
+                            price_date = EXCLUDED.price_date, supplier_name = EXCLUDED.supplier_name, product_name = EXCLUDED.product_name,
+                            product_code = EXCLUDED.product_code, unit_name = EXCLUDED.unit_name, currency = EXCLUDED.currency, expired_date = EXCLUDED.expired_date
+                    """, pricelist_values, page_size=500)
+                except Exception as e:
+                    print(f"Error inserting pricelist values: {e}")
+                    has_error = True
+                    error_msg = f"Pricelist insert failed: {e}"
 
             if branch_values:
                 branch_values = list({v[0]: v for v in branch_values}.values())
@@ -577,6 +778,39 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                         status = EXCLUDED.status
                 """, supplier_values)
                 
+            if document_template_values:
+                document_template_values = list({v[0]: v for v in document_template_values}.values())
+                try:
+                    execute_values(cur, """
+                        INSERT INTO md_document_templates (esb_id, company_id, name, document_type, template_code, flag_active)
+                        VALUES %s
+                        ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                            name = EXCLUDED.name, document_type = EXCLUDED.document_type, template_code = EXCLUDED.template_code,
+                            flag_active = EXCLUDED.flag_active
+                    """, document_template_values, page_size=500)
+                except Exception as e:
+                    print(f"Error inserting document template values: {e}")
+                    has_error = True
+                    error_msg = f"Document template insert failed: {e}"
+            
+            if customer_pricelist_values:
+                customer_pricelist_values = list({v[0]: v for v in customer_pricelist_values}.values())
+                try:
+                    execute_values(cur, """
+                        INSERT INTO md_customer_pricelists (esb_id, company_id, customer_name, product_name, product_code, 
+                            uom_name, currency_name, price, price_date, expire_date, flag_active)
+                        VALUES %s
+                        ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                            customer_name = EXCLUDED.customer_name, product_name = EXCLUDED.product_name,
+                            product_code = EXCLUDED.product_code, uom_name = EXCLUDED.uom_name,
+                            currency_name = EXCLUDED.currency_name, price = EXCLUDED.price,
+                            price_date = EXCLUDED.price_date, expire_date = EXCLUDED.expire_date, flag_active = EXCLUDED.flag_active
+                    """, customer_pricelist_values, page_size=500)
+                except Exception as e:
+                    print(f"Error inserting customer pricelist values: {e}")
+                    has_error = True
+                    error_msg = f"Customer pricelist insert failed: {e}"
+
             if dlq_values:
                 execute_values(cur, """
                     INSERT INTO dlq_logs (entity_type, raw_payload, error_reason)
@@ -589,6 +823,17 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
                 next_params = params.copy()
                 next_params["page"] += 1
                 fetch_queue.append(next_params)
+
+        # After successful PRODUCT sync, trigger product detail sync
+        if entity == "PRODUCT" and not has_error:
+            print(f"Starting product detail sync for company {company_id}...")
+            detail_sync_result = sync_product_details(company_id, client, conn, cur)
+            print(f"Product detail sync completed: {detail_sync_result['error_msg']}")
+            
+            # Update sync history with detail sync info
+            if detail_sync_result["errors"] > 0:
+                has_error = True
+                error_msg = f"PRODUCT sync OK but detail sync had {detail_sync_result['errors']} errors: {detail_sync_result['error_msg']}"
 
         status = "FAILED" if has_error else "SUCCESS"
         cur.execute(
