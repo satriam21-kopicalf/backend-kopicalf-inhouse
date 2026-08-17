@@ -1827,6 +1827,12 @@ TRX_ROW_FETCHERS = {
     "GOODS_RECEIPT_RETURN": _goods_receipt_return_rows,
     "GOODS_DELIVERY_RETURN": _goods_delivery_return_rows,
     "BILL_OF_MATERIAL": _bill_of_material_rows,
+    # Missing row fetchers added in Phase 4
+    "ADVANCE_RECAP": _advance_recap_rows,
+    "ITEM_JOURNAL": _item_journal_rows,
+    "PRODUCT_SALES_ACTUATION": _product_sales_actuation_rows,
+    "PURCHASE_INVOICE_PAYMENT": _purchase_invoice_payment_rows,
+    "PURCHASE_ORDER_ACTUATION": _purchase_order_actuation_rows,
 }
 
 
@@ -2020,6 +2026,184 @@ def _bill_of_material_rows(cur, company_id: int, branch_esb_id: typing.Optional[
                 "total": _num(d.get("total")),
                 "statusName": payload.get("statusName"),
             })
+    return rows
+
+
+def _advance_recap_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                        date_from: date, date_to: date):
+    """Fetch advance recapitulation rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'ADVANCE_RECAP'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        rows.append({
+            "advanceNum": payload.get("advanceNum"),
+            "advanceDate": str(payload.get("advanceDate") or "")[:10],
+            "branchName": payload.get("branchName"),
+            "employeeName": payload.get("employeeName"),
+            "departmentName": payload.get("departmentName"),
+            "purposeName": payload.get("purposeName"),
+            "amount": _num(payload.get("amount")),
+            "realizedAmount": _num(payload.get("realizedAmount")),
+            "remainingAmount": _num(payload.get("remainingAmount")),
+            "statusName": payload.get("statusName"),
+            "notes": payload.get("notes"),
+        })
+    return rows
+
+
+def _item_journal_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                       date_from: date, date_to: date):
+    """Fetch item journal rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'ITEM_JOURNAL'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        rows.append({
+            "journalNum": payload.get("journalNum"),
+            "journalDate": str(payload.get("journalDate") or "")[:10],
+            "branchName": payload.get("branchName"),
+            "productName": payload.get("productName"),
+            "productCode": payload.get("productCode"),
+            "uomName": payload.get("uomName"),
+            "transactionType": payload.get("transactionType"),
+            "inQty": _num(payload.get("inQty")),
+            "outQty": _num(payload.get("outQty")),
+            "balanceQty": _num(payload.get("balanceQty")),
+            "hpp": _num(payload.get("hpp")),
+            "reference": payload.get("reference"),
+            "notes": payload.get("notes"),
+        })
+    return rows
+
+
+def _product_sales_actuation_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                                  date_from: date, date_to: date):
+    """Fetch product sales actuation rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'PRODUCT_SALES_ACTUATION'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        rows.append({
+            "actuationNum": payload.get("actuationNum"),
+            "actuationDate": str(payload.get("actuationDate") or "")[:10],
+            "branchName": payload.get("branchName"),
+            "productSalesNum": payload.get("productSalesNum"),
+            "productName": payload.get("productName"),
+            "productCode": payload.get("productCode"),
+            "uomName": payload.get("uomName"),
+            "qtyOrdered": _num(payload.get("qtyOrdered")),
+            "qtyDelivered": _num(payload.get("qtyDelivered")),
+            "qtyInvoiced": _num(payload.get("qtyInvoiced")),
+            "price": _num(payload.get("price")),
+            "total": _num(payload.get("total")),
+            "statusName": payload.get("statusName"),
+            "notes": payload.get("notes"),
+        })
+    return rows
+
+
+def _purchase_invoice_payment_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                                   date_from: date, date_to: date):
+    """Fetch purchase invoice payment rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'PURCHASE_INVOICE_PAYMENT'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        rows.append({
+            "paymentNum": payload.get("paymentNum"),
+            "paymentDate": str(payload.get("paymentDate") or "")[:10],
+            "invoiceNum": payload.get("invoiceNum"),
+            "supplierName": payload.get("supplierName"),
+            "branchName": payload.get("branchName"),
+            "accountName": payload.get("accountName"),
+            "paymentMethodName": payload.get("paymentMethodName"),
+            "amount": _num(payload.get("amount")),
+            "reference": payload.get("reference"),
+            "statusName": payload.get("statusName"),
+            "notes": payload.get("notes"),
+        })
+    return rows
+
+
+def _purchase_order_actuation_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                                    date_from: date, date_to: date):
+    """Fetch purchase order actuation rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'PURCHASE_ORDER_ACTUATION'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        rows.append({
+            "actuationNum": payload.get("actuationNum"),
+            "actuationDate": str(payload.get("actuationDate") or "")[:10],
+            "purchaseOrderNum": payload.get("purchaseOrderNum"),
+            "supplierName": payload.get("supplierName"),
+            "branchName": payload.get("branchName"),
+            "productName": payload.get("productName"),
+            "productCode": payload.get("productCode"),
+            "uomName": payload.get("uomName"),
+            "qtyOrder": _num(payload.get("qtyOrder")),
+            "qtyReceived": _num(payload.get("qtyReceived")),
+            "qtyInvoiced": _num(payload.get("qtyInvoiced")),
+            "price": _num(payload.get("price")),
+            "total": _num(payload.get("total")),
+            "statusName": payload.get("statusName"),
+        })
     return rows
 
 
