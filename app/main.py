@@ -208,6 +208,45 @@ async def list_reports():
     return [{"slug": slug, "title": spec["title"], "source": spec["source"]}
             for slug, spec in REPORTS.items()]
 
+@app.get("/api/v1/reports/categories")
+async def list_report_categories():
+    """Get all report categories with their metadata."""
+    from app.services.reports import list_reports_by_category, REPORT_CATEGORIES
+    return {
+        "categories": REPORT_CATEGORIES,
+        "grouped_reports": list_reports_by_category(),
+    }
+
+@app.get("/api/v1/reports/tiers")
+async def list_report_tiers():
+    """Get all reports grouped by tier (T1=direct trx, T2=aggregated)."""
+    from app.services.reports import list_reports_by_tier
+    return {
+        "tiers": {
+            "T1": {
+                "label": "Direct ERP Data",
+                "description": "Real-time transaction data from ESB",
+                "color": "#3b82f6",  # blue
+            },
+            "T2": {
+                "label": "CALF-Aggregated",
+                "description": "Pre-computed reports from ESB",
+                "color": "#10b981",  # green
+            },
+        },
+        "reports_by_tier": list_reports_by_tier(),
+    }
+
+@app.get("/api/v1/reports/{slug}/metadata")
+async def get_report_metadata(slug: str):
+    """Get full metadata for a specific report."""
+    from app.services.reports import get_report_metadata
+    metadata = get_report_metadata(slug)
+    if not metadata:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Report not found: {slug}")
+    return metadata
+
 @app.get("/api/v1/reports/{slug}")
 async def get_report(slug: str, company_id: int, date_from: str, date_to: str,
                      branch_esb_id: str = None, limit: int = 200, offset: int = 0):
