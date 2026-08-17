@@ -1,113 +1,198 @@
-import os
+﻿import os
 import json
+import hashlib
+import math
 import httpx
 import typing
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from psycopg2.extras import execute_values, DictCursor
 from app.core.worker import celery_app
 from app.core.db import get_db_connection
 from app.schemas.esb import (
-    ESBProductModel, ESBCategoryModel, ESBSubCategoryModel, ESBUnitModel, 
-    ESBBomModel, ESBBranchProductModel, ESBPricelistModel, 
-    ESBBranchModel, ESBEmployeeModel, ESBSupplierModel, ESBGenericModel
+    ESBProductModel, ESBCategoryModel, ESBSubCategoryModel, ESBUnitModel,
+    ESBBomModel, ESBBranchProductModel, ESBPricelistModel,
+    ESBBranchModel, ESBSupplierModel, ESBGenericModel
 )
 import pytz
 
-ESB_API_BASE_URL = os.getenv("ESB_CORE_URL", "https://stg7.esb.co.id/core-stg")
+ESB_API_BASE_URL = os.getenv("ESB_CORE_URL", "https://services.esb.co.id/core")
 
-# Per-endpoint max limit configuration (to prevent 400 errors)
-ENDPOINT_MAX_LIMITS = {
-    "/units": 1000,  # /units max limit = 1000
-    "/product/list": 5000,  # /product/list max limit = 5000
-    "/product/category": 5000,
-    "/product/sub-category": 5000,
-    "/pricelist": 5000,
-    "/product/bom": 5000,
-    "/branch": 5000,
-    "/employee": 5000,
-    "/supplier": 5000,
-    "/document-template": 5000,
-    "/customer-pricelist": 5000,
-    # Default for unknown endpoints
-    "default": 1000
-}
+# Fallback credentials from env (used when company_configs rows have no per-company creds)
+ESB_FALLBACK_USERNAME = os.getenv("ESB_CORE_USERNAME", "CALFSUPERADMINOPS")
+ESB_FALLBACK_PASSWORD = os.getenv("ESB_CORE_PASSWORD", "")
 
-def _get_endpoint_max_limit(path: str) -> int:
-    """Get the maximum allowed limit for a specific endpoint."""
-    return ENDPOINT_MAX_LIMITS.get(path, ENDPOINT_MAX_LIMITS["default"])
+# Verified master endpoints (probed 2026-08-15).
+# response_shape: "array" = result is a plain list; "envelope" = {page, limit, count, data}
+# Report endpoints (is_report=True) pull into report_raw_staging only.
+MASTER_ENDPOINTS = [
+    {"entity": "BRANCH",            "path": "/branch",             "id_field": "branchID",     "shape": "array"},
+    {"entity": "PRODUCT",           "path": "/product",            "id_field": "productID",    "shape": "envelope"},
+    {"entity": "CATEGORY",          "path": "/product/category",   "id_field": "categoryID",   "shape": "envelope"},
+    {"entity": "PRODUCT_SUB_CATEGORY", "path": "/product/sub-category", "id_field": "subCategoryID", "shape": "envelope"},
+    {"entity": "PRODUCT_UNIT",      "path": "/units",              "id_field": "uomID",        "shape": "envelope"},
+    {"entity": "PRICELIST",         "path": "/pricelist",          "id_field": "ID",           "shape": "envelope"},
+    {"entity": "SUPPLIER",          "path": "/supplier",           "id_field": "supplierID",   "shape": "envelope"},
+    {"entity": "CUSTOMER",          "path": "/customer",           "id_field": "customerID",   "shape": "envelope"},
+    {"entity": "BOM",               "path": "/product/bom",        "id_field": "bomID",        "shape": "envelope"},
+    {"entity": "DOCUMENT_TEMPLATE", "path": "/document-template",  "id_field": "requestTemplateID", "shape": "envelope"},
+    {"entity": "ACC_PURPOSE",       "path": "/purpose",            "id_field": "purposeID",    "shape": "envelope"},
+    {"entity": "ACC_COST_CENTER",   "path": "/cost-center",        "id_field": "ID",           "shape": "array"},
+    {"entity": "ACC_COA",           "path": "/accounting/coa",     "id_field": "coaNo",        "shape": "array"},
+    {"entity": "COMP_PROJECT",      "path": "/project",            "id_field": "ID",           "shape": "array"},
+    {"entity": "COMP_USER",         "path": "/user",               "id_field": "username",     "shape": "envelope"},
+    {"entity": "PARTNER_CUST_CAT",  "path": "/customer/category",  "id_field": "customerCategoryID", "shape": "array"},
+    {"entity": "PARTNER_SUPP_CAT",  "path": "/supplier/category",  "id_field": "supplierCategoryID", "shape": "array"},
+    {"entity": "CUSTOMER_PRICELIST","path": "/customer-pricelist", "id_field": "ID",           "shape": "envelope"},
+]
 
+# Endpoints that exist but are currently empty in CALF scope - keep pulling, low cost.
+OPTIONAL_ENDPOINTS = [
+    {"entity": "ACC_TAX",           "path": "/tax",                "id_field": "taxID",        "shape": "envelope"},
+    {"entity": "ACC_CASHFLOW_CAT",  "path": "/cash-flow-category", "id_field": "ID",           "shape": "envelope"},
+    {"entity": "ACC_APPROVAL_FLOW", "path": "/approval-flow",      "id_field": "ID",           "shape": "envelope"},
+]
 
+REPORT_ENDPOINTS = [
+    {"entity": "POS_TX",            "path": "/pos/transaction",    "id_field": "ID"},
+]
 
-def _refresh_esb_token() -> typing.Optional[str]:
-    """Login ulang ke ESB dan kembalikan token baru. Return None jika gagal."""
-    esb_user = os.getenv("ESB_CORE_USERNAME")
-    esb_pass = os.getenv("ESB_CORE_PASSWORD")
-    if not esb_user or not esb_pass:
-        return None
-    try:
-        res = httpx.post(
-            f"{ESB_API_BASE_URL}/auth/login",
-            json={"username": esb_user, "password": esb_pass},
-            timeout=15.0
-        )
-        if res.status_code == 200:
-            return res.json().get("result", {}).get("accessToken")
-    except Exception:
-        pass
-    return None
+PAGE_SIZE = 100  # verified safe; limit=10000 triggers Validation Error on several endpoints
 
 
 class CircuitBreakerOpenException(Exception):
     pass
 
 
-class ESBClient:
-    """HTTP client untuk ESB API dengan auto token refresh saat 401."""
+class ESBAuthError(Exception):
+    pass
 
-    def __init__(self, token: str):
+
+def _esb_login(username: str, password: str) -> str:
+    """POST /auth/login -> base JWT."""
+    res = httpx.post(
+        f"{ESB_API_BASE_URL}/auth/login",
+        json={"username": username, "password": password},
+        timeout=20.0,
+    )
+    data = res.json()
+    if res.status_code != 200 or data.get("status") != "ok":
+        raise ESBAuthError(f"ESB login failed: {data.get('message') or res.status_code}")
+    return data["result"]["accessToken"]
+
+
+def _esb_switch_company(base_token: str, company_code: str, username: str, password: str) -> str:
+    """POST /auth/login/company with base JWT -> company-scoped JWT.
+
+    The base JWT is single-use for this call: on failure caused by an
+    already-consumed/expired token we re-login once and retry.
+    """
+    res = httpx.post(
+        f"{ESB_API_BASE_URL}/auth/login/company",
+        headers={"Authorization": f"Bearer {base_token}"},
+        json={"companyCode": company_code},
+        timeout=20.0,
+    )
+    data = res.json()
+    if res.status_code != 200 or data.get("status") != "ok":
+        # retry once with a fresh base token (base JWT may have been consumed)
+        fresh = _esb_login(username, password)
+        res = httpx.post(
+            f"{ESB_API_BASE_URL}/auth/login/company",
+            headers={"Authorization": f"Bearer {fresh}"},
+            json={"companyCode": company_code},
+            timeout=20.0,
+        )
+        data = res.json()
+        if res.status_code != 200 or data.get("status") != "ok":
+            raise ESBAuthError(f"Company switch failed for {company_code}: {data.get('message')}")
+    return data["result"]["accessToken"]
+
+
+def _esb_company_token(company_code: str, username: str, password: str,
+                       max_attempts: int = 4) -> str:
+    """Full auth flow: login -> switch to company -> scoped JWT.
+
+    Concurrent logins on the ESB can invalidate each other's base JWT,
+    so we retry with backoff.
+    """
+    import time
+    last_err = None
+    for attempt in range(max_attempts):
+        try:
+            base = _esb_login(username, password)
+            return _esb_switch_company(base, company_code, username, password)
+        except ESBAuthError as e:
+            last_err = e
+            # "not linked" errors are transient session-release issues on ESB;
+            # they need a longer wait before retrying
+            wait = 20 if "not linked" in str(e).lower() else 2 * (attempt + 1)
+            time.sleep(wait)
+    raise last_err
+
+
+class ESBClient:
+    """HTTP client for ESB API with company-scoped token and single re-auth on 401."""
+
+    def __init__(self, token: str, company_code: str = "", username: str = "", password: str = ""):
         self.token = token
+        self.company_code = company_code
+        self.username = username
+        self.password = password
         self.error_count = 0
         self.circuit_open = False
-        self._http_client = httpx.Client(timeout=60.0)
+        self._http = httpx.Client(timeout=60.0)
+
+    def _reauth(self) -> bool:
+        if not (self.company_code and self.username and self.password):
+            return False
+        try:
+            self.token = _esb_company_token(self.company_code, self.username, self.password)
+            return True
+        except Exception:
+            return False
 
     def get(self, path: str, params: typing.Optional[dict] = None):
         if self.circuit_open:
             raise CircuitBreakerOpenException("Circuit is open due to consecutive failures")
 
-        url = f"{ESB_API_BASE_URL}{path}"
-
-        response = self._http_client.get(
-            url,
-            headers=self._headers(),
-            params=params
+        response = self._http.get(
+            f"{ESB_API_BASE_URL}{path}",
+            headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
+            params=params,
         )
 
-        # Token expired — coba refresh sekali
+        # ESB returns 200 with status=fail JSON on auth errors too; handle both
         if response.status_code == 401:
-            new_token = _refresh_esb_token()
-            if new_token:
-                self.token = new_token
-                response = self._http_client.get(
-                    url,
-                    headers=self._headers(),
-                    params=params
+            if self._reauth():
+                response = self._http.get(
+                    f"{ESB_API_BASE_URL}{path}",
+                    headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
+                    params=params,
                 )
 
         if response.status_code >= 400:
-            # 400 pada stock-location = productDetailID tidak ditemukan, skip saja
-            if response.status_code == 400 and "stock-location" in url:
-                return {"result": []}
             self._record_error()
             response.raise_for_status()
 
-        self.error_count = 0
-        return response.json()
+        body = response.json()
+        if body.get("status") not in (None, "ok"):
+            msg = body.get("message", "")
+            code = body.get("code", "")
+            if code == "EC03100001":  # invalid/expired token -> re-auth once
+                if self._reauth():
+                    response = self._http.get(
+                        f"{ESB_API_BASE_URL}{path}",
+                        headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
+                        params=params,
+                    )
+                    body = response.json()
+                    if body.get("status") == "ok":
+                        self.error_count = 0
+                        return body
+            raise RuntimeError(f"ESB error {code}: {msg} ({path})")
 
-    def _headers(self) -> dict:
-        return {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        }
+        self.error_count = 0
+        return body
 
     def _record_error(self):
         self.error_count += 1
@@ -115,734 +200,493 @@ class ESBClient:
             self.circuit_open = True
 
 
-
-def get_all_endpoints():
-    return [
-        {"entity": "PRODUCT", "path": "/product/list", "schema": ESBProductModel},
-        {"entity": "BRANCH", "path": "/branch", "schema": ESBBranchModel},
-        {"entity": "CATEGORY", "path": "/product/category", "schema": ESBCategoryModel},
-        {"entity": "EMPLOYEE", "path": "/employee", "schema": ESBEmployeeModel},
-        {"entity": "SUPPLIER", "path": "/supplier", "schema": ESBSupplierModel},
-        
-        {"entity": "PRODUCT_SUB_CATEGORY", "path": "/product/sub-category", "schema": ESBSubCategoryModel},
-        {"entity": "PRODUCT_UNIT", "path": "/units", "schema": ESBUnitModel},
-        {"entity": "PRICELIST", "path": "/pricelist", "schema": ESBPricelistModel},
-        {"entity": "BRANCH_PRODUCT", "path": "/product/stock-location", "schema": ESBBranchProductModel},
-        {"entity": "CUSTOMER_PRICELIST", "path": "/customer-pricelist", "schema": ESBGenericModel},
-        {"entity": "BOM", "path": "/product/bom", "schema": ESBBomModel},
-        {"entity": "DOCUMENT_TEMPLATE", "path": "/document-template", "schema": ESBGenericModel},
-        {"entity": "FOOD_COST_CALC", "path": "/food-cost-calc", "schema": ESBGenericModel},
-        
-        {"entity": "POS_MENU", "path": "/pos/menu", "schema": ESBGenericModel},
-        {"entity": "POS_USER", "path": "/pos/user", "schema": ESBGenericModel},
-        {"entity": "POS_TABLE", "path": "/pos/table", "schema": ESBGenericModel},
-        {"entity": "POS_PROMO", "path": "/pos/promotion", "schema": ESBGenericModel},
-        {"entity": "POS_VOUCHER", "path": "/pos/voucher", "schema": ESBGenericModel},
-        {"entity": "POS_TX", "path": "/pos/transaction", "schema": ESBGenericModel, "is_report": True},
-        {"entity": "POS_GUEST", "path": "/pos/guest", "schema": ESBGenericModel},
-        {"entity": "POS_SYS", "path": "/pos/system", "schema": ESBGenericModel},
-        
-        {"entity": "ACC_COA", "path": "/accounting/coa", "schema": ESBGenericModel},
-        {"entity": "ACC_CASHFLOW_CAT", "path": "/accounting/cashflow_category", "schema": ESBGenericModel},
-        {"entity": "ACC_CURRENCY", "path": "/accounting/currency", "schema": ESBGenericModel},
-        {"entity": "ACC_TAX", "path": "/accounting/tax", "schema": ESBGenericModel},
-        {"entity": "ACC_RECURRING_JRNL", "path": "/accounting/recurring_journal", "schema": ESBGenericModel},
-        {"entity": "ACC_BANK", "path": "/accounting/bank", "schema": ESBGenericModel},
-        {"entity": "ACC_COST_CENTER", "path": "/accounting/cost_center", "schema": ESBGenericModel},
-        {"entity": "ACC_PURPOSE", "path": "/accounting/purpose", "schema": ESBGenericModel},
-        
-        {"entity": "COMP_BRAND", "path": "/company/brand", "schema": ESBGenericModel},
-        {"entity": "COMP_EMP_GROUP", "path": "/employee/group", "schema": ESBGenericModel},
-        {"entity": "COMP_USER_ROLE", "path": "/employee/user_role", "schema": ESBGenericModel},
-        {"entity": "COMP_DELIVERY", "path": "/company/delivery", "schema": ESBGenericModel},
-        {"entity": "COMP_SYS_CONFIG", "path": "/company/system_config", "schema": ESBGenericModel},
-        {"entity": "COMP_MKT", "path": "/company/marketing", "schema": ESBGenericModel},
-        
-        {"entity": "PARTNER_CUSTOMER", "path": "/partner/customer", "schema": ESBGenericModel},
-        {"entity": "PARTNER_TENANT", "path": "/partner/tenant", "schema": ESBGenericModel},
-        {"entity": "PARTNER_SALES_REP", "path": "/partner/sales_rep", "schema": ESBGenericModel},
-    ]
+def _extract_page(body: dict, shape: str) -> typing.Tuple[list, int]:
+    """Normalize response -> (records, total_pages). Handles array vs envelope."""
+    result = body.get("result")
+    if shape == "array":
+        records = result if isinstance(result, list) else []
+        return records, 1
+    if isinstance(result, dict):
+        records = result.get("data") or []
+        count = result.get("count", 0)
+        total_pages = max(1, math.ceil((count or len(records)) / PAGE_SIZE))
+        return records, total_pages
+    return [], 1
 
 
+def _derive_esb_id(item: dict, id_field: str) -> str:
+    val = item.get(id_field) or item.get("id") or item.get("ID")
+    if val is None:
+        return hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
+    return str(val)
 
 
-def sync_product_details(company_id: int, client: ESBClient, conn, cur) -> dict:
-    """Sync product details by calling /product/{id} for each product."""
-    result = {
-        "success": True,
-        "processed": 0,
-        "errors": 0,
-        "error_msg": ""
-    }
-    
-    try:
-        # Get all product IDs that need detail sync (those with NULL critical fields)
-        cur.execute("""
-            SELECT DISTINCT esb_id 
-            FROM md_products 
-            WHERE company_id = %s 
-              AND (sell_price IS NULL OR purchase_price IS NULL OR stock IS NULL OR 
-                   barcode IS NULL OR uom_name IS NULL OR description IS NULL)
-        """, (company_id,))
-        
-        products_to_sync = [row['esb_id'] for row in cur.fetchall()]
-        
-        if not products_to_sync:
-            result["error_msg"] = "No products require detail sync"
-            return result
-        
-        total = len(products_to_sync)
-        success_count = 0
-        error_count = 0
-        
-        for i, product_esb_id in enumerate(products_to_sync):
-            try:
-                # Call product detail endpoint
-                detail_response = client.get(f"/product/{product_esb_id}")
-                
-                if detail_response and isinstance(detail_response, dict):
-                    product_data = detail_response.get('result', {})
-                    
-                    if product_data:
-                        # Extract fields from product detail response
-                        product_name = product_data.get('productName') or ""
-                        product_code = product_data.get('productCode') or ""
-                        barcode = product_data.get('barcode')
-                        description = product_data.get('description')
-                        
-                        # Extract from productDetails array if available
-                        product_details = product_data.get('productDetails', [])
-                        if product_details and isinstance(product_details, list) and len(product_details) > 0:
-                            first_detail = product_details[0]
-                            uom_name = first_detail.get('uomName')
-                            purchase_price = first_detail.get('basePrice') or first_detail.get('purchasePrice')
-                            sell_price = first_detail.get('sellPrice')
-                            stock = first_detail.get('stock')
-                            uom_id = first_detail.get('uomID')
-                        else:
-                            # Fallback to top-level fields if no productDetails
-                            uom_name = product_data.get('uomName')
-                            purchase_price = product_data.get('purchasePrice')
-                            sell_price = product_data.get('sellPrice')
-                            stock = product_data.get('stock')
-                            uom_id = product_data.get('uomID')
-                        
-                        # Update the product record with detailed information
-                        cur.execute("""
-                            UPDATE md_products 
-                            SET 
-                                name = COALESCE(%s, name),
-                                product_code = COALESCE(%s, product_code),
-                                barcode = COALESCE(%s, barcode),
-                                uom_name = COALESCE(%s, uom_name),
-                                purchase_price = COALESCE(%s, purchase_price),
-                                sell_price = COALESCE(%s, sell_price),
-                                stock = COALESCE(%s, stock),
-                                uom_id = COALESCE(%s, uom_id),
-                                description = COALESCE(%s, description),
-                                updated_at = NOW()
-                            WHERE company_id = %s AND esb_id = %s
-                        """, (
-                            product_name, product_code, barcode, uom_name,
-                            purchase_price, sell_price, stock, uom_id, description,
-                            company_id, product_esb_id
-                        ))
-                        
-                        success_count += 1
-                        
-                        # Log progress every 10 products
-                        if (i + 1) % 10 == 0:
-                            print(f"Product detail sync progress: {i+1}/{total} ({(i+1)/total*100:.1f}%)")
-                
-            except Exception as e:
-                error_count += 1
-                print(f"Error syncing product detail for ID {product_esb_id}: {e}")
-                # Continue with other products even if one fails
-        
-        conn.commit()
-        
-        result["processed"] = success_count
-        result["errors"] = error_count
-        result["error_msg"] = f"Processed {success_count}/{total} products, {error_count} errors"
-        
-        if error_count > 0:
-            result["success"] = False
-            
-    except Exception as e:
-        result["success"] = False
-        result["error_msg"] = f"Product detail sync failed: {e}"
-        print(f"Product detail sync error: {e}")
-    
-    return result
+# ─────────────────────────────────────────────────────────────────────────
+# Per-endpoint normalizers -> (table, tuple) rows
+# ─────────────────────────────────────────────────────────────────────────
 
-def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, date_from: typing.Optional[str] = None, date_to: typing.Optional[str] = None):
+def _normalize(entity: str, item: dict, esb_id: str, company_id: int):
+    if entity == "BRANCH":
+        return ("md_outlets", (esb_id, company_id, item.get("branchName"), item.get("branchCode"),
+                               True, None, None, None))
+    if entity == "PRODUCT":
+        return ("md_products", (esb_id, company_id, item.get("productName"), item.get("productCode") or "",
+                                item.get("bomName"), item.get("categoryName"), item.get("subCategoryName"),
+                                item.get("categoryTypeName"), bool(item.get("flagActive", 1))))
+    if entity == "CATEGORY":
+        return ("md_categories", (esb_id, company_id, item.get("categoryCode"), item.get("categoryName"),
+                                  item.get("categoryTypeName"), bool(item.get("flagActive", 1)),
+                                  item.get("categoryTypeID"), item.get("notes")))
+    if entity == "PRODUCT_SUB_CATEGORY":
+        return ("md_sub_categories", (esb_id, company_id, None, None, item.get("subCategoryName"),
+                                      bool(item.get("flagActive", 1)), item.get("deadStockThreshold"), item.get("notes")))
+    if entity == "PRODUCT_UNIT":
+        return ("md_units", (esb_id, company_id, item.get("metricName"), item.get("uomName"),
+                             bool(item.get("flagActive", 1))))
+    if entity == "PRICELIST":
+        ab = item.get("applicableBranch") or {}
+        branch = None
+        if ab.get("type") == "ALL":
+            branch = "ALL"
+        elif isinstance(ab.get("branches"), list) and ab["branches"]:
+            branch = ",".join(str(b.get("branchID")) for b in ab["branches"] if b.get("branchID"))
+        return ("md_pricelists", (
+            esb_id, company_id, item.get("productID"), branch, item.get("price") or 0,
+            bool(item.get("flagActive", 1)), item.get("priceDate"), item.get("supplierName"),
+            item.get("productName"), item.get("productCode"), item.get("unit"), item.get("currencyName"),
+            item.get("expireDate"), item.get("pricelistNum"), item.get("productDetailID"),
+            item.get("uomID"), item.get("currencyID"),
+            json.dumps(ab, default=str)))
+    if entity == "SUPPLIER":
+        return ("md_suppliers", (esb_id, company_id, item.get("supplierName"), None, item.get("category"),
+                                 "ACTIVE" if item.get("flagActive") else "INACTIVE",
+                                 item.get("address"), item.get("contactPerson"), item.get("cellPhone"),
+                                 item.get("dueDate"), item.get("supplierCategoryID"),
+                                 bool(item.get("lockVAT", False)), bool(item.get("vatSubject", False))))
+    if entity == "CUSTOMER":
+        return ("md_customers", (esb_id, company_id, item.get("customerName"), item.get("customerCode") or "",
+                                 str(item.get("customerCategoryID") or ""), item.get("customerCategoryName"),
+                                 item.get("paymentDueDays") or 0, item.get("address"), item.get("picName"),
+                                 item.get("picPhone"), bool(item.get("flagActive", 1)),
+                                 bool(item.get("lockVat", 0))))
+    if entity == "BOM":
+        return ("md_boms", (esb_id, company_id, item.get("productID"), item.get("bomCode"), item.get("bomName"),
+                            1.0, bool(item.get("flagActive", 1)), item.get("bomTypeID"),
+                            item.get("bomTypeName"), item.get("productName"), item.get("uomName")))
+    if entity == "DOCUMENT_TEMPLATE":
+        return ("md_document_templates", (esb_id, company_id, item.get("requestTemplateName"),
+                                          item.get("requestTemplateTypeNames"), str(item.get("requestTemplateID")),
+                                          bool(item.get("flagActive", 1))))
+    if entity == "ACC_PURPOSE":
+        return ("md_purposes", (esb_id, company_id, item.get("purposeName"), item.get("purposeAccount"),
+                                item.get("purposeCoaNo"), json.dumps(item.get("purposeAppliedTo") or []),
+                                bool(item.get("flagActive", True))))
+    if entity == "ACC_COST_CENTER":
+        return ("md_cost_centers", (esb_id, company_id, item.get("costCenter"), item.get("costCenterName"),
+                                    bool(item.get("flagActive", True))))
+    if entity == "ACC_COA":
+        return ("md_coas", (esb_id, company_id, item.get("coaNo"), item.get("coaLevel"),
+                            item.get("description"), item.get("currency"),
+                            str(item.get("branchID") or ""), bool(item.get("flagActive", 0))))
+    if entity == "COMP_PROJECT":
+        return ("md_projects", (esb_id, company_id, item.get("projectName"), item.get("projectCode"),
+                                bool(item.get("flagActive", True))))
+    if entity == "COMP_USER":
+        return ("md_users", (esb_id, company_id, item.get("username"), item.get("fullName"),
+                             item.get("userRoleID"), item.get("userRoleDesc"),
+                             bool(item.get("flagActive", 1))))
+    if entity == "PARTNER_CUST_CAT":
+        return ("md_customer_categories", (esb_id, company_id, item.get("customerCategoryName"),
+                                           bool(item.get("flagActive", 1))))
+    if entity == "PARTNER_SUPP_CAT":
+        return ("md_supplier_categories", (esb_id, company_id, item.get("supplierCategoryName"), True))
+    if entity == "CUSTOMER_PRICELIST":
+        return ("md_customer_pricelists", (esb_id, company_id, item.get("customerName"),
+                                           item.get("productName"), item.get("productCode"),
+                                           item.get("uomName"), item.get("currencyName"),
+                                           item.get("price") or 0, item.get("priceDate"),
+                                           item.get("expireDate"), True))
+    if entity == "ACC_TAX":
+        return ("esb_raw_staging", None)  # staging-only for now (empty dataset)
+    return ("esb_raw_staging", None)
+
+
+UPSERTS = {
+    "md_outlets": """
+        INSERT INTO md_outlets (esb_id, company_id, name, branch_code, is_active, location_name, stock, available_stock)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, branch_code=EXCLUDED.branch_code, is_active=EXCLUDED.is_active,
+            location_name=EXCLUDED.location_name, stock=EXCLUDED.stock, available_stock=EXCLUDED.available_stock,
+            updated_at=NOW()""",
+    "md_products": """
+        INSERT INTO md_products (esb_id, company_id, name, product_code, bom_name, category_name,
+            sub_category_name, category_type_name, flag_active)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, product_code=EXCLUDED.product_code, bom_name=EXCLUDED.bom_name,
+            category_name=EXCLUDED.category_name, sub_category_name=EXCLUDED.sub_category_name,
+            category_type_name=EXCLUDED.category_type_name, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+    "md_categories": """
+        INSERT INTO md_categories (esb_id, company_id, code, name, type_name, flag_active, category_type_id, notes)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            code=EXCLUDED.code, name=EXCLUDED.name, type_name=EXCLUDED.type_name,
+            flag_active=EXCLUDED.flag_active, category_type_id=EXCLUDED.category_type_id,
+            notes=EXCLUDED.notes, updated_at=NOW()""",
+    "md_sub_categories": """
+        INSERT INTO md_sub_categories (esb_id, company_id, category_esb_id, code, name, flag_active, dead_stock_threshold, notes)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            category_esb_id=EXCLUDED.category_esb_id, code=EXCLUDED.code, name=EXCLUDED.name,
+            flag_active=EXCLUDED.flag_active, dead_stock_threshold=EXCLUDED.dead_stock_threshold,
+            notes=EXCLUDED.notes, updated_at=NOW()""",
+    "md_units": """
+        INSERT INTO md_units (esb_id, company_id, code, name, flag_active)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            code=EXCLUDED.code, name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+    "md_pricelists": """
+        INSERT INTO md_pricelists (esb_id, company_id, product_esb_id, branch_esb_id, price, flag_active,
+            price_date, supplier_name, product_name, product_code, unit_name, currency, expired_date,
+            pricelist_num, product_detail_esb_id, uom_id, currency_id, applicable_branch)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            product_esb_id=EXCLUDED.product_esb_id, branch_esb_id=EXCLUDED.branch_esb_id,
+            price=EXCLUDED.price, flag_active=EXCLUDED.flag_active, price_date=EXCLUDED.price_date,
+            supplier_name=EXCLUDED.supplier_name, product_name=EXCLUDED.product_name,
+            product_code=EXCLUDED.product_code, unit_name=EXCLUDED.unit_name, currency=EXCLUDED.currency,
+            expired_date=EXCLUDED.expired_date, pricelist_num=EXCLUDED.pricelist_num,
+            product_detail_esb_id=EXCLUDED.product_detail_esb_id, uom_id=EXCLUDED.uom_id,
+            currency_id=EXCLUDED.currency_id, applicable_branch=EXCLUDED.applicable_branch, updated_at=NOW()""",
+    "md_suppliers": """
+        INSERT INTO md_suppliers (esb_id, company_id, name, type, supplier_category, status, address,
+            contact_person, cell_phone, due_date, category_esb_id, lock_vat, vat_subject)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, supplier_category=EXCLUDED.supplier_category, status=EXCLUDED.status,
+            address=EXCLUDED.address, contact_person=EXCLUDED.contact_person, cell_phone=EXCLUDED.cell_phone,
+            due_date=EXCLUDED.due_date, category_esb_id=EXCLUDED.category_esb_id,
+            lock_vat=EXCLUDED.lock_vat, vat_subject=EXCLUDED.vat_subject, updated_at=NOW()""",
+    "md_customers": """
+        INSERT INTO md_customers (esb_id, company_id, name, code, category_esb_id, category_name,
+            payment_due_days, address, pic_name, pic_phone, flag_active, lock_vat)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, code=EXCLUDED.code, category_esb_id=EXCLUDED.category_esb_id,
+            category_name=EXCLUDED.category_name, payment_due_days=EXCLUDED.payment_due_days,
+            address=EXCLUDED.address, pic_name=EXCLUDED.pic_name, pic_phone=EXCLUDED.pic_phone,
+            flag_active=EXCLUDED.flag_active, lock_vat=EXCLUDED.lock_vat, updated_at=NOW()""",
+    "md_boms": """
+        INSERT INTO md_boms (esb_id, company_id, product_esb_id, code, name, output_qty, flag_active,
+            bom_type_id, bom_type_name, product_name, uom_name)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            product_esb_id=EXCLUDED.product_esb_id, code=EXCLUDED.code, name=EXCLUDED.name,
+            output_qty=EXCLUDED.output_qty, flag_active=EXCLUDED.flag_active,
+            bom_type_id=EXCLUDED.bom_type_id, bom_type_name=EXCLUDED.bom_type_name,
+            product_name=EXCLUDED.product_name, uom_name=EXCLUDED.uom_name, updated_at=NOW()""",
+    "md_document_templates": """
+        INSERT INTO md_document_templates (esb_id, company_id, name, document_type, template_code, flag_active)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, document_type=EXCLUDED.document_type, template_code=EXCLUDED.template_code,
+            flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+    "md_purposes": """
+        INSERT INTO md_purposes (esb_id, company_id, name, account, coa_no, applied_to, flag_active)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, account=EXCLUDED.account, coa_no=EXCLUDED.coa_no,
+            applied_to=EXCLUDED.applied_to, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+    "md_coas": """
+        INSERT INTO md_coas (esb_id, company_id, coa_no, coa_level, description, currency, branch_esb_id, flag_active)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            coa_no=EXCLUDED.coa_no, coa_level=EXCLUDED.coa_level, description=EXCLUDED.description,
+            currency=EXCLUDED.currency, branch_esb_id=EXCLUDED.branch_esb_id,
+            flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+    "md_projects": """
+        INSERT INTO md_projects (esb_id, company_id, name, code, flag_active)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, code=EXCLUDED.code, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+    "md_users": """
+        INSERT INTO md_users (esb_id, company_id, username, full_name, role_id, role_desc, flag_active)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            username=EXCLUDED.username, full_name=EXCLUDED.full_name, role_id=EXCLUDED.role_id,
+            role_desc=EXCLUDED.role_desc, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+    "md_customer_categories": """
+        INSERT INTO md_customer_categories (esb_id, company_id, name, flag_active)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+    "md_supplier_categories": """
+        INSERT INTO md_supplier_categories (esb_id, company_id, name, flag_active)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+    "md_customer_pricelists": """
+        INSERT INTO md_customer_pricelists (esb_id, company_id, customer_name, product_name, product_code,
+            uom_name, currency_name, price, price_date, expire_date, flag_active)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            customer_name=EXCLUDED.customer_name, product_name=EXCLUDED.product_name,
+            product_code=EXCLUDED.product_code, uom_name=EXCLUDED.uom_name,
+            currency_name=EXCLUDED.currency_name, price=EXCLUDED.price,
+            price_date=EXCLUDED.price_date, expire_date=EXCLUDED.expire_date,
+            flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+    "md_cost_centers": """
+        INSERT INTO md_cost_centers (esb_id, company_id, code, name, flag_active)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            code=EXCLUDED.code, name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+}
+
+
+def _is_engine_enabled(cur) -> bool:
+    cur.execute("SELECT sync_enabled FROM engine_settings WHERE id = 1")
+    row = cur.fetchone()
+    return bool(row and row["sync_enabled"])
+
+
+def sync_endpoint_data(company_id: int, client: ESBClient, entity: str, path: str,
+                       id_field: str, shape: str):
+    """Pull all pages of one endpoint for one company into staging + normalized tables."""
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
-    
     try:
-        # Resolve schema_cls
-        schema_cls: typing.Type[typing.Any] = ESBGenericModel
-        for ep in get_all_endpoints():
-            if ep["entity"] == entity:
-                schema_cls = ep["schema"]
-                break
-
-        try:
-            client = ESBClient(esb_token)
-        except Exception as e:
-            print("Failed to initialize ESBClient", e)
-            return
-        
-        cur.execute("SELECT sync_batch_size FROM engine_settings WHERE id = 1")
-        settings = typing.cast(dict[str, typing.Any] | None, cur.fetchone())
-        batch_size = settings['sync_batch_size'] if settings else 1000
-        
-        # Apply per-endpoint max limit constraint
-        max_limit = _get_endpoint_max_limit(path)
-        effective_batch_size = min(batch_size, max_limit)
-        
-        if effective_batch_size != batch_size:
-            print(f"Adjusting batch size for {path}: {batch_size} -> {effective_batch_size} (max limit: {max_limit})")
-
         cur.execute(
             "INSERT INTO sync_history (entity_type, status, company_id) VALUES (%s, %s, %s) RETURNING id",
-            (entity, 'STARTED', company_id)
-        )
-        result = typing.cast(dict[str, typing.Any] | None, cur.fetchone())
-        if result is None:
-            raise RuntimeError("Failed to create sync history record")
-        history_id = result['id']
+            (entity, 'STARTED', company_id))
+        history_id = cur.fetchone()['id']
         conn.commit()
-        
+
         total_processed = 0
         has_error = False
         error_msg = ""
-        
-        fetch_queue = []
-        if entity == "BRANCH_PRODUCT":
-            # ESB API requires productDetailID for stock-location
-            # We extract unique productDetailIDs from the PRICELIST raw data
-            cur.execute("""
-                SELECT DISTINCT CAST(raw_data->>'productDetailID' AS TEXT) AS pd_id 
-                FROM esb_raw_staging 
-                WHERE entity_type = 'PRICELIST' AND company_id = %s 
-                  AND raw_data->>'productDetailID' IS NOT NULL
-            """, (company_id,))
-            product_detail_ids = [row['pd_id'] for row in cur.fetchall() if row['pd_id']]
-            for pd_id in product_detail_ids:
-                fetch_queue.append({"productDetailID": pd_id, "page": 1, "limit": effective_batch_size})
-            if not product_detail_ids:
-                error_msg = "No product details found. Please ensure PRICELIST is synced first."
-                has_error = True
-        else:
-            fetch_queue.append({"page": 1, "limit": effective_batch_size})
-            
-        while fetch_queue:
-            params = fetch_queue.pop(0)
-            
+        page = 1
+        total_pages = 1
+        table_rows: typing.Dict[str, list] = {}
+
+        while page <= total_pages:
             try:
-                if date_from and date_to:
-                    params["start_date"] = date_from
-                    params["end_date"] = date_to
-                    
-                data = client.get(path, params=params)
-                records = []
-                total_pages = 1
-                
-                if isinstance(data, list):
-                    records = data
-                elif isinstance(data, dict):
-                    pagination = data.get('pagination', {})
-                    if pagination and isinstance(pagination, dict):
-                        total_pages = pagination.get('totalPages', 1)
-                        
-                    result_obj = data.get('result', [])
-                    if isinstance(result_obj, list):
-                        records = result_obj
-                    elif isinstance(result_obj, dict):
-                        records = result_obj.get('data', [])
-                        if not pagination and 'count' in result_obj:
-                            import math
-                            total_pages = math.ceil(result_obj['count'] / effective_batch_size)
-                    else:
-                        records = []
-                else:
-                    records = []
-                    
+                body = client.get(path, params={"page": page, "limit": PAGE_SIZE})
+                records, total_pages = _extract_page(body, shape)
             except CircuitBreakerOpenException:
-                has_error = True
-                error_msg = "Circuit breaker opened during sync."
+                has_error, error_msg = True, "Circuit breaker opened during sync."
                 break
             except Exception as api_err:
                 has_error = True
-                error_msg = f"API call failed for {entity} page {params.get('page', 1)}: {api_err}"
-                break 
-            
-            if not records:
-                # Instead of break, continue because there might be other product IDs in queue
-                continue 
+                error_msg = f"API call failed for {entity} page {page}: {api_err}"
+                break
 
-            
             staging_values = []
-            product_values = []
-            category_values = []
-            sub_category_values = []
-            unit_values = []
-            bom_values = []
-            branch_product_values = []
-            pricelist_values = []
-            branch_values = []
-            employee_values = []
-            supplier_values = []
-            document_template_values = []
-            customer_pricelist_values = []
-            dlq_values = []
-            
             for item in records:
                 try:
-                    parsed_item = schema_cls(**item)
-
-                    # ─── Derive esb_id per entity ─────────────────────────────
-                    if entity == "PRODUCT":
-                        esb_id = str(parsed_item.productID)
-                    elif entity == "BRANCH":
-                        esb_id = str(parsed_item.branchID)
-                    elif entity == "CATEGORY":
-                        esb_id = str(parsed_item.categoryID)
-                    elif entity == "PRODUCT_SUB_CATEGORY":
-                        esb_id = str(parsed_item.subCategoryID)
-                    elif entity == "PRODUCT_UNIT":
-                        # uomID adalah ID utama unit (bukan metricID grup)
-                        esb_id = str(parsed_item.uomID)
-                    elif entity == "BOM":
-                        esb_id = str(parsed_item.bomID)
-                    elif entity == "BRANCH_PRODUCT":
-                        # productDetailID adalah identifier utama dari stock-location
-                        esb_id = str(parsed_item.productDetailID)
-                        if esb_id == "0":
-                            import hashlib
-                            esb_id = hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
-                    elif entity == "PRICELIST":
-                        # ID field di response adalah 'ID' (kapital)
-                        esb_id = str(parsed_item.pricelistID)
-                        if esb_id == "0":
-                            import hashlib
-                            esb_id = hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
-                    elif entity == "EMPLOYEE":
-                        esb_id = str(parsed_item.employeeID)
-                    elif entity == "SUPPLIER":
-                        esb_id = str(parsed_item.supplierID)
-                    elif entity == "DOCUMENT_TEMPLATE" or entity == "CUSTOMER_PRICELIST":
-                        # For generic models, try common ID fields
-                        esb_id_val = (
-                            item.get('id') or item.get('ID') or
-                            item.get('templateID') or item.get('customerPricelistID') or
-                            item.get('pricelistID') or item.get('documentID') or
-                            str(hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest())
-                        )
-                        esb_id = str(esb_id_val) if esb_id_val else "unknown"
-                        if esb_id == "unknown":
-                            import hashlib
-                            esb_id = hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
-                    else:
-                        esb_id_val = (
-                            item.get('id') or item.get('ID') or
-                            item.get(f"{entity.lower().split('_')[-1]}ID") or
-                            item.get('coaNo') or item.get('code') or item.get('name')
-                        )
-                        esb_id = str(esb_id_val) if esb_id_val else "unknown"
-                        if esb_id == "unknown":
-                            import hashlib
-                            esb_id = hashlib.md5(json.dumps(item, sort_keys=True).encode()).hexdigest()
-
-                    # Staging row
-                    staging_values.append((entity, esb_id, company_id, json.dumps(item), datetime.now(timezone.utc)))
-
-                    # ─── Extract ke tabel spesifik ────────────────────────────
-                    if entity == "PRODUCT":
-                        product_values.append((
-                            esb_id, company_id,
-                            parsed_item.productName,
-                            parsed_item.productCode or "",
-                            parsed_item.bomName,
-                            parsed_item.categoryName,
-                            parsed_item.subCategoryName,
-                            parsed_item.categoryTypeName,
-                            parsed_item.flagActive if parsed_item.flagActive is not None else 1,
-                            parsed_item.barcode,
-                            parsed_item.uomName,
-                            parsed_item.purchasePrice,
-                            parsed_item.sellPrice,
-                            parsed_item.stock,
-                            bool(parsed_item.hasVariant) if parsed_item.hasVariant is not None else False,
-                            bool(parsed_item.isRawMaterial) if parsed_item.isRawMaterial is not None else False,
-                            bool(parsed_item.isProduction) if parsed_item.isProduction is not None else False,
-                            parsed_item.imageUrl,
-                            parsed_item.productAlias,
-                            parsed_item.categoryID,
-                            parsed_item.subCategoryID,
-                            parsed_item.uomID,
-                            parsed_item.bomID,
-                            parsed_item.pricelistID,
-                            parsed_item.minStock,
-                            parsed_item.maxStock,
-                            parsed_item.isTrackInventory,
-                            parsed_item.description
-                        ))
-
-                    elif entity == "CATEGORY":
-                        # categoryCode tidak ada di response, simpan None
-                        category_values.append((
-                            esb_id, company_id,
-                            getattr(parsed_item, 'categoryCode', None),  # None
-                            parsed_item.categoryName,
-                            parsed_item.categoryTypeName,
-                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
-                        ))
-
-                    elif entity == "PRODUCT_SUB_CATEGORY":
-                        # categoryID & subCategoryCode tidak ada di response list
-                        sub_category_values.append((
-                            esb_id, company_id,
-                            None,                    # category_esb_id — tidak ada di response
-                            None,                    # code — tidak ada di response
-                            parsed_item.subCategoryName,
-                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
-                            parsed_item.displayOrder  # None
-                        ))
-
-                    elif entity == "PRODUCT_UNIT":
-                        # metricName sebagai code, uomName sebagai name
-                        unit_values.append((
-                            esb_id, company_id,
-                            parsed_item.metricName,  # code = nama metrik
-                            parsed_item.uomName,     # name = nama satuan
-                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
-                        ))
-
-                    elif entity == "BOM":
-                        # productID tidak ada di list endpoint, simpan None
-                        bom_values.append((
-                            esb_id, company_id,
-                            parsed_item.productID,   # None dari list response
-                            parsed_item.bomCode,
-                            parsed_item.bomName,
-                            parsed_item.outputQty or 1.0,
-                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True
-                        ))
-
-                    elif entity == "BRANCH_PRODUCT":
-                        # Response: productDetailID, productName, uomName, qty, stockQty
-                        # branchID/branchName tidak ada di response ini
-                        branch_product_values.append((
-                            esb_id, company_id,
-                            None,                          # branch_esb_id — tidak ada
-                            parsed_item.productID,         # None
-                            parsed_item.stockQty or 0,     # stock = stockQty
-                            parsed_item.stockQty or 0,     # available_stock = stockQty
-                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
-                            parsed_item.productCode,       # None
-                            parsed_item.productName,
-                            parsed_item.branchName,        # None
-                            parsed_item.locationID,        # None
-                            parsed_item.locationName,      # None
-                            parsed_item.minStock or 0,
-                            parsed_item.maxStock or 0,
-                            parsed_item.reservedStock or 0
-                        ))
-
-                    elif entity == "PRICELIST":
-                        # expiredDate dipetakan dari 'expireDate' via AliasChoices
-                        _price_date = parsed_item.priceDate or None
-                        _expired_date = parsed_item.expiredDate or None
-                        # branchID dari applicableBranch jika ada
-                        _branch_id = parsed_item.branchID  # property dari applicableBranch
-                        pricelist_values.append((
-                            esb_id, company_id,
-                            parsed_item.productID,
-                            _branch_id,
-                            parsed_item.price or 0,
-                            bool(parsed_item.flagActive) if parsed_item.flagActive is not None else True,
-                            _price_date,
-                            parsed_item.supplierName,
-                            parsed_item.productName,
-                            parsed_item.productCode,
-                            parsed_item.unitName,
-                            parsed_item.currency,
-                            _expired_date
-                        ))
-
-                    elif entity == "BRANCH":
-                        branch_values.append((
-                            esb_id, company_id,
-                            parsed_item.branchName,
-                            parsed_item.branchCode,
-                            parsed_item.isActive if parsed_item.isActive is not None else True,
-                            parsed_item.locationName,
-                            parsed_item.stock,
-                            parsed_item.availableStock
-                        ))
-
-                    elif entity == "EMPLOYEE":
-                        employee_values.append((
-                            esb_id, company_id,
-                            parsed_item.full_name,
-                            parsed_item.position,
-                            getattr(parsed_item, 'employeeGroup', None),
-                            getattr(parsed_item, 'status', 'ACTIVE'),
-                            str(parsed_item.branch_id) if parsed_item.branch_id else 'UNKNOWN'
-                        ))
-
-                    elif entity == "SUPPLIER":
-                        supplier_values.append((
-                            esb_id, company_id,
-                            parsed_item.name,
-                            parsed_item.type,
-                            parsed_item.supplierCategory,
-                            getattr(parsed_item, 'status', 'ACTIVE')
-                        ))
-
-                    elif entity == "DOCUMENT_TEMPLATE":
-                        # Extract document template fields from generic model
-                        template_name = item.get('templateName') or item.get('name') or ""
-                        template_code = item.get('templateCode') or item.get('code') or ""
-                        document_type = item.get('documentType') or item.get('type') or ""
-                        document_template_values.append((
-                            esb_id, company_id,
-                            template_name,
-                            document_type,
-                            template_code,
-                            bool(item.get('flagActive', 1))
-                        ))
-
-                    elif entity == "CUSTOMER_PRICELIST":
-                        # Extract customer pricelist fields from generic model
-                        customer_name = item.get('customerName') or ""
-                        product_name = item.get('productName') or ""
-                        product_code = item.get('productCode') or ""
-                        uom_name = item.get('uomName') or item.get('unit') or ""
-                        currency_name = item.get('currencyName') or item.get('currency') or ""
-                        price = item.get('price', 0) or 0
-                        price_date = item.get('priceDate') or None
-                        expire_date = item.get('expireDate') or item.get('expiredDate') or None
-                        customer_pricelist_values.append((
-                            esb_id, company_id,
-                            customer_name,
-                            product_name,
-                            product_code,
-                            uom_name,
-                            currency_name,
-                            price,
-                            price_date,
-                            expire_date,
-                            bool(item.get('flagActive', 1))
-                        ))
-
+                    esb_id = _derive_esb_id(item, id_field)
+                    staging_values.append((entity, esb_id, company_id, json.dumps(item, default=str),
+                                           datetime.now(timezone.utc)))
+                    table, row = _normalize(entity, item, esb_id, company_id)
+                    if row:
+                        table_rows.setdefault(table, []).append(row)
                     total_processed += 1
                 except Exception as ve:
-                    dlq_values.append((entity, json.dumps(item), str(ve)))
-            
+                    cur.execute(
+                        "INSERT INTO dlq_logs (entity_type, raw_payload, error_reason) VALUES (%s, %s, %s)",
+                        (entity, json.dumps(item, default=str), str(ve)))
+
             if staging_values:
                 staging_values = list({(v[0], v[1], v[2]): v for v in staging_values}.values())
-                try:
-                    execute_values(cur, """
-                        INSERT INTO esb_raw_staging (entity_type, esb_id, company_id, raw_data, updated_at)
-                        VALUES %s
-                        ON CONFLICT (company_id, entity_type, esb_id) DO UPDATE SET
-                            raw_data = EXCLUDED.raw_data,
-                            updated_at = EXCLUDED.updated_at
-                    """, staging_values, page_size=500)
-                except Exception as e:
-                    print(f"Error inserting staging values: {e}")
-                    has_error = True
-                    error_msg = f"Staging insert failed: {e}"
-            
-            if product_values:
-                product_values = list({v[0]: v for v in product_values}.values())
                 execute_values(cur, """
-                    INSERT INTO md_products (
-                        esb_id, company_id, name, product_code, bom_name, category_name, sub_category_name, category_type_name, 
-                        flag_active, barcode, uom_name, purchase_price, sell_price, stock, has_variant, 
-                        is_raw_material, is_production, image_url, product_alias, category_id, sub_category_id,
-                        uom_id, bom_id, pricelist_id, min_stock, max_stock, is_track_inventory, description
-                    )
-                    VALUES %s
-                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                        name = EXCLUDED.name, product_code = EXCLUDED.product_code, bom_name = EXCLUDED.bom_name,
-                        category_name = EXCLUDED.category_name, sub_category_name = EXCLUDED.sub_category_name,
-                        category_type_name = EXCLUDED.category_type_name, flag_active = EXCLUDED.flag_active,
-                        barcode = EXCLUDED.barcode, uom_name = EXCLUDED.uom_name, purchase_price = EXCLUDED.purchase_price,
-                        sell_price = EXCLUDED.sell_price, stock = EXCLUDED.stock, has_variant = EXCLUDED.has_variant,
-                        is_raw_material = EXCLUDED.is_raw_material, is_production = EXCLUDED.is_production, image_url = EXCLUDED.image_url,
-                        product_alias = EXCLUDED.product_alias, category_id = EXCLUDED.category_id, sub_category_id = EXCLUDED.sub_category_id,
-                        uom_id = EXCLUDED.uom_id, bom_id = EXCLUDED.bom_id, pricelist_id = EXCLUDED.pricelist_id, min_stock = EXCLUDED.min_stock,
-                        max_stock = EXCLUDED.max_stock, is_track_inventory = EXCLUDED.is_track_inventory, description = EXCLUDED.description
-                """, product_values)
-            
-            if category_values:
-                category_values = list({v[0]: v for v in category_values}.values())
-                execute_values(cur, """
-                    INSERT INTO md_categories (esb_id, company_id, code, name, type_name, flag_active)
-                    VALUES %s
-                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                        code = EXCLUDED.code, name = EXCLUDED.name, type_name = EXCLUDED.type_name, flag_active = EXCLUDED.flag_active
-                """, category_values)
-
-            if sub_category_values:
-                sub_category_values = list({v[0]: v for v in sub_category_values}.values())
-                execute_values(cur, """
-                    INSERT INTO md_sub_categories (esb_id, company_id, category_esb_id, code, name, flag_active, display_order)
-                    VALUES %s
-                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                        category_esb_id = EXCLUDED.category_esb_id, code = EXCLUDED.code, name = EXCLUDED.name, flag_active = EXCLUDED.flag_active,
-                        display_order = EXCLUDED.display_order
-                """, sub_category_values)
-
-            if unit_values:
-                unit_values = list({v[0]: v for v in unit_values}.values())
-                execute_values(cur, """
-                    INSERT INTO md_units (esb_id, company_id, code, name, flag_active)
-                    VALUES %s
-                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                        code = EXCLUDED.code, name = EXCLUDED.name, flag_active = EXCLUDED.flag_active
-                """, unit_values)
-
-            if bom_values:
-                bom_values = list({v[0]: v for v in bom_values}.values())
-                execute_values(cur, """
-                    INSERT INTO md_boms (esb_id, company_id, product_esb_id, code, name, output_qty, flag_active)
-                    VALUES %s
-                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                        product_esb_id = EXCLUDED.product_esb_id, code = EXCLUDED.code, name = EXCLUDED.name, output_qty = EXCLUDED.output_qty, flag_active = EXCLUDED.flag_active
-                """, bom_values)
-
-            if branch_product_values:
-                branch_product_values = list({v[0]: v for v in branch_product_values}.values())
-                execute_values(cur, """
-                    INSERT INTO md_branch_products (esb_id, company_id, branch_esb_id, product_esb_id, stock, available_stock, flag_active,
-                        product_code, product_name, branch_name, location_id, location_name, min_stock, max_stock, reserved_stock)
-                    VALUES %s
-                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                        branch_esb_id = EXCLUDED.branch_esb_id, product_esb_id = EXCLUDED.product_esb_id,
-                        stock = EXCLUDED.stock, available_stock = EXCLUDED.available_stock, flag_active = EXCLUDED.flag_active,
-                        product_code = EXCLUDED.product_code, product_name = EXCLUDED.product_name, branch_name = EXCLUDED.branch_name,
-                        location_id = EXCLUDED.location_id, location_name = EXCLUDED.location_name, min_stock = EXCLUDED.min_stock,
-                        max_stock = EXCLUDED.max_stock, reserved_stock = EXCLUDED.reserved_stock
-                """, branch_product_values)
-
-            if pricelist_values:
-                pricelist_values = list({v[0]: v for v in pricelist_values}.values())
-                try:
-                    execute_values(cur, """
-                        INSERT INTO md_pricelists (esb_id, company_id, product_esb_id, branch_esb_id, price, flag_active,
-                            price_date, supplier_name, product_name, product_code, unit_name, currency, expired_date)
-                        VALUES %s
-                        ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                            product_esb_id = EXCLUDED.product_esb_id, branch_esb_id = EXCLUDED.branch_esb_id,
-                            price = EXCLUDED.price, flag_active = EXCLUDED.flag_active,
-                            price_date = EXCLUDED.price_date, supplier_name = EXCLUDED.supplier_name, product_name = EXCLUDED.product_name,
-                            product_code = EXCLUDED.product_code, unit_name = EXCLUDED.unit_name, currency = EXCLUDED.currency, expired_date = EXCLUDED.expired_date
-                    """, pricelist_values, page_size=500)
-                except Exception as e:
-                    print(f"Error inserting pricelist values: {e}")
-                    has_error = True
-                    error_msg = f"Pricelist insert failed: {e}"
-
-            if branch_values:
-                branch_values = list({v[0]: v for v in branch_values}.values())
-                execute_values(cur, """
-                    INSERT INTO md_outlets (esb_id, company_id, name, branch_code, is_active, location_name, stock, available_stock)
-                    VALUES %s
-                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                        name = EXCLUDED.name, branch_code = EXCLUDED.branch_code, is_active = EXCLUDED.is_active,
-                        location_name = EXCLUDED.location_name, stock = EXCLUDED.stock, available_stock = EXCLUDED.available_stock
-                """, branch_values)
-                
-            if employee_values:
-                employee_values = list({v[0]: v for v in employee_values}.values())
-                execute_values(cur, """
-                    INSERT INTO md_employees (esb_id, company_id, name, role, employee_group, status, branch_id)
-                    VALUES %s
-                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                        name = EXCLUDED.name, role = EXCLUDED.role, employee_group = EXCLUDED.employee_group,
-                        status = EXCLUDED.status, branch_id = EXCLUDED.branch_id
-                """, employee_values)
-                
-            if supplier_values:
-                supplier_values = list({v[0]: v for v in supplier_values}.values())
-                execute_values(cur, """
-                    INSERT INTO md_suppliers (esb_id, company_id, name, type, supplier_category, status)
-                    VALUES %s
-                    ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                        name = EXCLUDED.name, type = EXCLUDED.type, supplier_category = EXCLUDED.supplier_category,
-                        status = EXCLUDED.status
-                """, supplier_values)
-                
-            if document_template_values:
-                document_template_values = list({v[0]: v for v in document_template_values}.values())
-                try:
-                    execute_values(cur, """
-                        INSERT INTO md_document_templates (esb_id, company_id, name, document_type, template_code, flag_active)
-                        VALUES %s
-                        ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                            name = EXCLUDED.name, document_type = EXCLUDED.document_type, template_code = EXCLUDED.template_code,
-                            flag_active = EXCLUDED.flag_active
-                    """, document_template_values, page_size=500)
-                except Exception as e:
-                    print(f"Error inserting document template values: {e}")
-                    has_error = True
-                    error_msg = f"Document template insert failed: {e}"
-            
-            if customer_pricelist_values:
-                customer_pricelist_values = list({v[0]: v for v in customer_pricelist_values}.values())
-                try:
-                    execute_values(cur, """
-                        INSERT INTO md_customer_pricelists (esb_id, company_id, customer_name, product_name, product_code, 
-                            uom_name, currency_name, price, price_date, expire_date, flag_active)
-                        VALUES %s
-                        ON CONFLICT (company_id, esb_id) DO UPDATE SET
-                            customer_name = EXCLUDED.customer_name, product_name = EXCLUDED.product_name,
-                            product_code = EXCLUDED.product_code, uom_name = EXCLUDED.uom_name,
-                            currency_name = EXCLUDED.currency_name, price = EXCLUDED.price,
-                            price_date = EXCLUDED.price_date, expire_date = EXCLUDED.expire_date, flag_active = EXCLUDED.flag_active
-                    """, customer_pricelist_values, page_size=500)
-                except Exception as e:
-                    print(f"Error inserting customer pricelist values: {e}")
-                    has_error = True
-                    error_msg = f"Customer pricelist insert failed: {e}"
-
-            if dlq_values:
-                execute_values(cur, """
-                    INSERT INTO dlq_logs (entity_type, raw_payload, error_reason)
-                    VALUES %s
-                """, dlq_values)
-
+                    INSERT INTO esb_raw_staging (entity_type, esb_id, company_id, raw_data, updated_at)
+                    VALUES %s ON CONFLICT (company_id, entity_type, esb_id) DO UPDATE SET
+                        raw_data = EXCLUDED.raw_data, updated_at = EXCLUDED.updated_at
+                """, staging_values, page_size=500)
             conn.commit()
-            
-            if params["page"] < total_pages:
-                next_params = params.copy()
-                next_params["page"] += 1
-                fetch_queue.append(next_params)
+            page += 1
 
-        # After successful PRODUCT sync, trigger product detail sync
-        if entity == "PRODUCT" and not has_error:
-            print(f"Starting product detail sync for company {company_id}...")
-            detail_sync_result = sync_product_details(company_id, client, conn, cur)
-            print(f"Product detail sync completed: {detail_sync_result['error_msg']}")
-            
-            # Update sync history with detail sync info
-            if detail_sync_result["errors"] > 0:
-                has_error = True
-                error_msg = f"PRODUCT sync OK but detail sync had {detail_sync_result['errors']} errors: {detail_sync_result['error_msg']}"
+        for table, rows in table_rows.items():
+            if table in UPSERTS and rows:
+                # Dedupe by natural key (first tuple element = esb_id) to avoid
+                # "ON CONFLICT cannot affect row a second time" on batch upserts
+                rows = list({r[0]: r for r in rows}.values())
+                try:
+                    execute_values(cur, UPSERTS[table], rows, page_size=500)
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    has_error = True
+                    error_msg = f"{table} upsert failed: {e}"
 
         status = "FAILED" if has_error else "SUCCESS"
         cur.execute(
-            """
-            UPDATE sync_history SET status = %s, records_processed = %s, error_message = %s, completed_at = %s
-            WHERE id = %s
-            """,
-            (status, total_processed, error_msg, datetime.now(timezone.utc), history_id)
-        )
+            "UPDATE sync_history SET status=%s, records_processed=%s, error_message=%s, completed_at=%s WHERE id=%s",
+            (status, total_processed, error_msg, datetime.now(timezone.utc), history_id))
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def _sync_product_details(company_id: int, client: ESBClient):
+    """Pull /product/{id} details (productDetails array) into md_product_details."""
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("""
+            SELECT esb_id FROM md_products WHERE company_id = %s
+              AND NOT EXISTS (
+                SELECT 1 FROM md_product_details d WHERE d.company_id = %s AND d.product_esb_id = md_products.esb_id
+              )
+        """, (company_id, company_id))
+        ids = [r['esb_id'] for r in cur.fetchall()]
+        for esb_id in ids:
+            try:
+                body = client.get(f"/product/{esb_id}")
+                result = body.get("result") or {}
+                rows = []
+                for pd in result.get("productDetails") or []:
+                    rows.append((
+                        str(pd.get("productDetailID")), company_id, esb_id,
+                        pd.get("uomID"), pd.get("metricID"), pd.get("uomName"),
+                        pd.get("qty"), pd.get("basePrice"), pd.get("SKU"),
+                        bool(pd.get("isBase")), bool(pd.get("isStock")), bool(pd.get("isPurchase")),
+                        bool(pd.get("isTransfer")), bool(pd.get("isSales")), bool(pd.get("flagActive", True))))
+                if rows:
+                    execute_values(cur, """
+                        INSERT INTO md_product_details (esb_id, company_id, product_esb_id, uom_id, metric_id,
+                            uom_name, qty, base_price, sku, is_base, is_stock, is_purchase, is_transfer, is_sales, flag_active)
+                        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+                            qty=EXCLUDED.qty, base_price=EXCLUDED.base_price, sku=EXCLUDED.sku,
+                            is_base=EXCLUDED.is_base, is_stock=EXCLUDED.is_stock, is_purchase=EXCLUDED.is_purchase,
+                            is_transfer=EXCLUDED.is_transfer, is_sales=EXCLUDED.is_sales,
+                            flag_active=EXCLUDED.flag_active, updated_at=NOW()
+                    """, rows)
+                    conn.commit()
+            except Exception:
+                conn.rollback()
+                continue
+    finally:
+        cur.close()
+        conn.close()
+
+
+def _get_due_entities(cur) -> list:
+    """Return entities whose sync interval has elapsed (or never synced)."""
+    cur.execute("""
+        SELECT entity_type FROM md_sync_schedules
+        WHERE enabled = true
+          AND (last_synced_at IS NULL OR last_synced_at + (interval_minutes || ' minutes')::interval <= NOW())
+    """)
+    return [r["entity_type"] for r in cur.fetchall()]
+
+
+def _mark_entity_synced(cur, entity: str):
+    cur.execute("UPDATE md_sync_schedules SET last_synced_at = NOW(), updated_at = NOW() WHERE entity_type = %s", (entity,))
+
+
+@celery_app.task
+def sync_company_data(company_id: int, company_code: str, username: str, password: str,
+                      entities: list):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        if not _is_engine_enabled(cur):
+            print("Engine disabled (engine_settings.sync_enabled=false). Skipping sync.")
+            return
+        if not entities:
+            print("No due entities for this run.")
+            return
+
+        try:
+            # Serialize the login flow across parallel company tasks (lazy import:
+            # trx_engine imports this module at load time)
+            from app.services.trx_engine import _auth_locked_company_token
+            token = _auth_locked_company_token(company_code, username, password)
+        except ESBAuthError as e:
+            cur.execute(
+                "INSERT INTO sync_history (entity_type, status, company_id, error_message, completed_at) VALUES (%s,%s,%s,%s,%s)",
+                ("AUTH", "FAILED", company_id, str(e), datetime.now(timezone.utc)))
+            conn.commit()
+            print(f"Auth failed for {company_code}: {e}")
+            return
+
+        client = ESBClient(token, company_code, username, password)
+        for ep in MASTER_ENDPOINTS + OPTIONAL_ENDPOINTS:
+            if ep["entity"] not in entities:
+                continue
+            if not _is_engine_enabled(cur):
+                print("Engine disabled mid-sync. Aborting.")
+                return
+            try:
+                sync_endpoint_data(company_id, client, ep["entity"], ep["path"], ep["id_field"], ep["shape"])
+            except Exception as e:
+                print(f"Error syncing {ep['entity']} for {company_code}: {e}")
+
+        if "PRODUCT_DETAIL" in entities:
+            try:
+                _sync_product_details(company_id, client)
+            except Exception as e:
+                print(f"Product detail sync failed for {company_code}: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+
+@celery_app.task
+def sync_all_companies(companies: list, entities: list):
+    """Run sync_company_data sequentially for each company (avoids ESB auth races)."""
+    for co in companies:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=DictCursor)
+        enabled = _is_engine_enabled(cur)
+        cur.close(); conn.close()
+        if not enabled:
+            print("Engine disabled mid-run. Aborting remaining companies.")
+            return
+        try:
+            sync_company_data(
+                company_id=co["company_id"],
+                company_code=co["company_code"],
+                username=co["username"],
+                password=co["password"],
+                entities=entities,
+            )
+        except Exception as e:
+            print(f"Company {co['company_code']} sync failed: {e}")
+
+
+@celery_app.task
+def sync_master_data():
+
+
+    """Spawn per-company sync tasks for all ACTIVE companies using per-company credentials."""
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("SELECT sync_enabled FROM engine_settings WHERE id = 1")
+        row = cur.fetchone()
+        if not row or not row["sync_enabled"]:
+            print("Engine disabled. No sync spawned.")
+            return
+
+        cur.execute("""
+            SELECT id, esb_company_code, esb_username, esb_password
+            FROM company_configs WHERE is_active = true AND esb_company_code IS NOT NULL
+        """)
+        companies = cur.fetchall()
+        if not companies:
+            print("No active companies with esb_company_code found.")
+            return
+
+        # Per-entity scheduling: only pull entities whose interval has elapsed
+        due_entities = _get_due_entities(cur)
+        if not due_entities:
+            print("No entities are due for sync.")
+            return
+
+        # Parallel per-company dispatch (Sprint 3): each company becomes its own
+        # queue_master task. Concurrent ESB logins are serialized by the shared
+        # esb_auth_lock inside sync_company_data, so parallelism is safe.
+        for co in companies:
+            username = co["esb_username"] or ESB_FALLBACK_USERNAME
+            password = co["esb_password"] or ESB_FALLBACK_PASSWORD
+            if not (username and password):
+                continue
+            sync_company_data.delay(
+                company_id=co["id"],
+                company_code=co["esb_company_code"],
+                username=username,
+                password=password,
+                entities=due_entities,
+            )
+
+        # Mark entities as synced (per-run granularity; company-level done inside task)
+        for entity in due_entities:
+            _mark_entity_synced(cur, entity)
         conn.commit()
     finally:
         cur.close()
@@ -850,129 +694,57 @@ def sync_endpoint_data(company_id: int, esb_token: str, entity: str, path: str, 
 
 
 @celery_app.task
-def sync_company_data(company_id: int, esb_token: str, historical_start: str, today_str: str):
-    endpoints = get_all_endpoints()
-    for ep in endpoints:
-        entity = ep["entity"]
-        path = ep["path"]
-        is_report = ep.get("is_report", False)
-        
-        # For reports, pass date ranges
-        d_from = historical_start if is_report else None
-        d_to = today_str if is_report else None
-        
-        try:
-            sync_endpoint_data(
-                company_id=company_id,
-                esb_token=esb_token,
-                entity=entity,
-                path=path,
-                date_from=d_from,
-                date_to=d_to
-            )
-        except Exception as e:
-            print(f"Error syncing {entity} sequentially: {e}")
-
-@celery_app.task
-def sync_master_data():
-    """
-    Backwards compatible trigger that acts as the router to spawn subtasks for ALL companies.
-    """
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=DictCursor)
-    
-    try:
-        cur.execute("SELECT id, esb_token FROM company_configs WHERE is_active = true")
-        companies = cur.fetchall()
-        
-        if not companies:
-            print("No active companies found.")
-            return
-        
-        # Calculate date_from and date_to for report endpoints
-        # Initial historical pull: 2026-07-01 to today
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        historical_start = "2026-07-01"
-            
-        # Try to get dynamic token
-        dynamic_token = None
-        esb_user = os.getenv("ESB_CORE_USERNAME")
-        esb_pass = os.getenv("ESB_CORE_PASSWORD")
-        if esb_user and esb_pass:
-            try:
-                login_url = f"{ESB_API_BASE_URL}/auth/login"
-                res = httpx.post(login_url, json={"username": esb_user, "password": esb_pass}, timeout=15.0)
-                if res.status_code == 200:
-                    data = res.json()
-                    dynamic_token = data.get("result", {}).get("accessToken")
-            except Exception as e:
-                print(f"Failed to fetch dynamic token: {e}")
-
-        for company in companies:
-            company_id = company['id']
-            esb_token = dynamic_token if dynamic_token else company['esb_token']
-            
-            if not esb_token:
-                continue
-                
-            sync_company_data.delay(company_id, esb_token, historical_start, today_str)
-    finally:
-        cur.close()
-        conn.close()
-
-@celery_app.task
 def sync_master_data_router():
-    from datetime import datetime, timezone
-    import pytz
-    
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
-    
     try:
-        cur.execute("SELECT work_hours_interval_minutes, morning_window_interval_minutes FROM engine_settings WHERE id = 1")
-        settings = typing.cast(typing.Any, cur.fetchone())
-        if not settings:
-            return "No engine settings found"
-            
-        work_interval = settings['work_hours_interval_minutes']
-        morning_interval = settings['morning_window_interval_minutes']
-        
+        cur.execute("SELECT sync_enabled, work_hours_interval_minutes, morning_window_interval_minutes FROM engine_settings WHERE id = 1")
+        settings = cur.fetchone()
+        if not settings or not settings["sync_enabled"]:
+            return "Engine disabled"
+
+        work_interval = settings["work_hours_interval_minutes"]
+        morning_interval = settings["morning_window_interval_minutes"]
+
         jkt_tz = pytz.timezone('Asia/Jakarta')
         now_jkt = datetime.now(jkt_tz)
-        current_hour = now_jkt.hour
-        current_minute = now_jkt.minute
-        current_time_float = current_hour + (current_minute / 60.0)
-        
-        is_morning_window = 2.5 <= current_time_float <= 8.0 
-        is_work_hours = not is_morning_window
-        
+        current_time_float = now_jkt.hour + (now_jkt.minute / 60.0)
+
+        is_morning_window = 2.5 <= current_time_float <= 8.0
         target_interval = morning_interval if is_morning_window else work_interval
-        
-        cur.execute("SELECT completed_at FROM sync_history WHERE entity_type = 'SYSTEM_SYNC_TRACKER' AND status = 'SUCCESS' ORDER BY id DESC LIMIT 1")
-        last_sync = typing.cast(typing.Any, cur.fetchone())
-        
-        should_run = False
-        if last_sync and last_sync.get('completed_at'):
-            last_sync_time = last_sync['completed_at']
-            delta_minutes = (datetime.now(timezone.utc) - last_sync_time).total_seconds() / 60.0
-            if delta_minutes >= (target_interval - 0.5):
-                should_run = True
-        else:
-            should_run = True
-            
+
+        cur.execute(
+            "SELECT completed_at FROM sync_history WHERE entity_type = 'SYSTEM_SYNC_TRACKER' AND status = 'SUCCESS' ORDER BY id DESC LIMIT 1")
+        last_sync = cur.fetchone()
+
+        should_run = True
+        if last_sync and last_sync["completed_at"]:
+            delta_minutes = (datetime.now(timezone.utc) - last_sync["completed_at"]).total_seconds() / 60.0
+            should_run = delta_minutes >= (target_interval - 0.5)
+
         if should_run:
-            print(f"Triggering sync_master_data. Interval matched: {target_interval} minutes.")
-            
-            # Create a master record to record the fact we triggered it (so the interval works)
-            cur.execute("INSERT INTO sync_history (entity_type, status, completed_at) VALUES ('SYSTEM_SYNC_TRACKER', 'SUCCESS', %s)", (datetime.now(timezone.utc),))
+            cur.execute(
+                "INSERT INTO sync_history (entity_type, status, completed_at) VALUES ('SYSTEM_SYNC_TRACKER', 'SUCCESS', %s)",
+                (datetime.now(timezone.utc),))
             conn.commit()
-            
             sync_master_data.delay()
-            return f"Triggered sync (interval {target_interval})"
-        else:
-            print(f"Skipping sync. Target interval {target_interval} mins not yet reached.")
-            return "Skipped sync"
-            
+
+            # Dual-lane: dispatch TRX delta lane when any TRX_* entity is due.
+            # send_task (by name) avoids a circular import with trx_engine.
+            try:
+                cur.execute("""
+                    SELECT 1 FROM md_sync_schedules
+                    WHERE enabled = true AND entity_type LIKE 'TRX\\_%%'
+                      AND (last_synced_at IS NULL OR last_synced_at + (interval_minutes || ' minutes')::interval <= NOW())
+                    LIMIT 1
+                """)
+                if cur.fetchone():
+                    celery_app.send_task("app.services.trx_engine.delta_sync_trx")
+            except Exception as e:
+                print(f"TRX delta dispatch check failed: {e}")
+
+            return f"Triggered sync (interval {target_interval} minutes)"
+        return "Skipped sync"
     finally:
         cur.close()
         conn.close()

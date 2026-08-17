@@ -14,9 +14,70 @@ services:
       - redis
     restart: unless-stopped
 
-  celery_worker:
+  # Beat scheduler only (single instance; dispatches routed tasks to queues)
+  celery_beat:
     build: .
-    command: celery -A app.core.worker worker -B --loglevel=info
+    command: celery -A app.core.worker beat --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Master-data lane: infrequent master sync (interval configurable via
+  # engine_settings; dispatched by the 5-min router)
+  worker_master:
+    build: .
+    command: celery -A app.core.worker worker -Q queue_master --concurrency=4 --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - BACKFILL_WINDOW_START=19
+      - BACKFILL_WINDOW_END=8
+      - BACKFILL_START_DATE=2024-01-01
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Daily lane: TRX delta + direct reports (live 30-min delta + deep 06:00) + audit
+  worker_trx_daily:
+    build: .
+    command: celery -A app.core.worker worker -Q queue_sync --concurrency=4 --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - BACKFILL_WINDOW_START=19
+      - BACKFILL_WINDOW_END=8
+      - BACKFILL_START_DATE=2024-01-01
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Lane A: historical backfill, TRX + RPT (night window 19:00-08:00 WIB; parallel across
+  # companies via bf_company_{id} Redis locks — one task per company at a time;
+  # dispatch order is CALF-first round-robin)
+  worker_backfill:
+    build: .
+    command: celery -A app.core.worker worker -Q queue_backfill --concurrency=6 --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - BACKFILL_WINDOW_START=19
+      - BACKFILL_WINDOW_END=8
+      - BACKFILL_START_DATE=2024-01-01
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Report queries + async exports (on-demand, API-facing; parallel XLSX)
+  worker_report:
+    build: .
+    command: celery -A app.core.worker worker -Q queue_report,queue_export --concurrency=4 --loglevel=info
     env_file:
       - .env
     environment:
@@ -27,6 +88,7 @@ services:
 
   redis:
     image: redis:alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction", "--save", "900 1 60 100"]
     ports:
       - "6379:6379"
     volumes:
