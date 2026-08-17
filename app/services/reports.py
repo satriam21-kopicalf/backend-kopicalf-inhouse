@@ -739,6 +739,268 @@ REPORTS: typing.Dict[str, dict] = {
             {"key": "statusName", "label": "Status"},
         ],
     },
+    # ─────────────────────────────────────────────────────────────────────────────
+    # ADDITIONAL PURCHASING REPORTS (T1)
+    # ─────────────────────────────────────────────────────────────────────────────
+    "purchase-invoice-report": {
+        "title": "Purchase Invoice Report",
+        "title_id": "Laporan Invoice Pembelian",
+        "category": "purchasing",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "PURCHASE_INVOICE",
+        "description": "Purchase invoice transactions",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "invoiceNum", "label": "Invoice Number"},
+            {"key": "invoiceDate", "label": "Invoice Date"},
+            {"key": "dueDate", "label": "Due Date"},
+            {"key": "supplierName", "label": "Supplier"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "price", "label": "Price", "numeric": True},
+            {"key": "discountPercent", "label": "Discount %", "numeric": True},
+            {"key": "subTotal", "label": "Sub Total", "numeric": True},
+            {"key": "taxPercent", "label": "Tax %", "numeric": True},
+            {"key": "total", "label": "Total", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    "purchase-invoice-payment-report": {
+        "title": "Purchase Invoice Payment Report",
+        "title_id": "Laporan Pembayaran Invoice Pembelian",
+        "category": "purchasing",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "PURCHASE_INVOICE_PAYMENT",
+        "description": "Purchase invoice payment tracking",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "paymentNum", "label": "Payment Number"},
+            {"key": "paymentDate", "label": "Payment Date"},
+            {"key": "invoiceNum", "label": "Invoice Reference"},
+            {"key": "supplierName", "label": "Supplier"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "accountName", "label": "Account"},
+            {"key": "paymentMethodName", "label": "Payment Method"},
+            {"key": "amount", "label": "Amount", "numeric": True},
+            {"key": "reference", "label": "Reference"},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    "purchase-return-report": {
+        "title": "Purchase Return Report",
+        "title_id": "Laporan Retur Pembelian",
+        "category": "purchasing",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "PURCHASE_RETURN",
+        "description": "Purchase return transactions",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "returnNum", "label": "Return Number"},
+            {"key": "returnDate", "label": "Return Date"},
+            {"key": "invoiceNum", "label": "Invoice Reference"},
+            {"key": "supplierName", "label": "Supplier"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "warehouseName", "label": "Warehouse"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "price", "label": "Price", "numeric": True},
+            {"key": "total", "label": "Total", "numeric": True},
+            {"key": "reason", "label": "Reason"},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    "advance-recapitulation-report": {
+        "title": "Advance Recapitulation Report",
+        "title_id": "Laporan Rekapitulasi Advance",
+        "category": "purchasing",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "ADVANCE_RECAP",
+        "description": "Advance payment recapitulation",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "advanceNum", "label": "Advance Number"},
+            {"key": "advanceDate", "label": "Advance Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "employeeName", "label": "Employee"},
+            {"key": "departmentName", "label": "Department"},
+            {"key": "purposeName", "label": "Purpose"},
+            {"key": "amount", "label": "Amount", "numeric": True},
+            {"key": "realizedAmount", "label": "Realized", "numeric": True},
+            {"key": "remainingAmount", "label": "Remaining", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    # ─────────────────────────────────────────────────────────────────────────────
+    # ADDITIONAL INVENTORY REPORTS (T1)
+    # ─────────────────────────────────────────────────────────────────────────────
+    "goods-receipt-recapitulation-report": {
+        "title": "Goods Receipt Recapitulation Report",
+        "title_id": "Laporan Rekapitulasi Penerimaan Barang",
+        "category": "inventory",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "GOODS_RECEIPT",
+        "description": "Goods receipt summary",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "goodsReceiptNum", "label": "GR Number"},
+            {"key": "goodsReceiptDate", "label": "GR Date"},
+            {"key": "purchaseOrderNum", "label": "PO Reference"},
+            {"key": "supplierName", "label": "Supplier"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "warehouseName", "label": "Warehouse"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qtyOrder", "label": "Qty Order", "numeric": True},
+            {"key": "qtyReceive", "label": "Qty Received", "numeric": True},
+            {"key": "qtyReject", "label": "Qty Rejected", "numeric": True},
+            {"key": "hpp", "label": "HPP", "numeric": True},
+            {"key": "totalReceive", "label": "Total Value", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+        ],
+    },
+    "goods-delivery-recapitulation-report": {
+        "title": "Goods Delivery Recapitulation Report",
+        "title_id": "Laporan Rekapitulasi Pengeluaran Barang",
+        "category": "inventory",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "GOODS_DELIVERY",
+        "description": "Goods delivery summary",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "goodsDeliveryNum", "label": "GD Number"},
+            {"key": "goodsDeliveryDate", "label": "GD Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "destinationName", "label": "Destination"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "hpp", "label": "HPP", "numeric": True},
+            {"key": "total", "label": "Total Value", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    "goods-receipt-return-report": {
+        "title": "Goods Receipt Return Report",
+        "title_id": "Laporan Retur Penerimaan Barang",
+        "category": "inventory",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "GOODS_RECEIPT_RETURN",
+        "description": "Goods receipt return transactions",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "returnNum", "label": "Return Number"},
+            {"key": "returnDate", "label": "Return Date"},
+            {"key": "goodsReceiptNum", "label": "GR Reference"},
+            {"key": "supplierName", "label": "Supplier"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "warehouseName", "label": "Warehouse"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "hpp", "label": "HPP", "numeric": True},
+            {"key": "total", "label": "Total Value", "numeric": True},
+            {"key": "reason", "label": "Reason"},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    "goods-delivery-return-report": {
+        "title": "Goods Delivery Return Report",
+        "title_id": "Laporan Retur Pengeluaran Barang",
+        "category": "inventory",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "GOODS_DELIVERY_RETURN",
+        "description": "Goods delivery return transactions",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "returnNum", "label": "Return Number"},
+            {"key": "returnDate", "label": "Return Date"},
+            {"key": "goodsDeliveryNum", "label": "GD Reference"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "destinationName", "label": "Destination"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "hpp", "label": "HPP", "numeric": True},
+            {"key": "total", "label": "Total Value", "numeric": True},
+            {"key": "reason", "label": "Reason"},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    "bill-of-material-report": {
+        "title": "Bill of Material Report",
+        "title_id": "Laporan Bill of Material",
+        "category": "inventory",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "BILL_OF_MATERIAL",
+        "description": "BOM details",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "bomNum", "label": "BOM Number"},
+            {"key": "bomDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "productName", "label": "Output Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "materialName", "label": "Material"},
+            {"key": "materialCode", "label": "Material Code"},
+            {"key": "materialUom", "label": "Material Unit"},
+            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "hpp", "label": "HPP", "numeric": True},
+            {"key": "total", "label": "Total Value", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+        ],
+    },
+    "purchase-order-actuation-report": {
+        "title": "Purchase Order Actuation Report",
+        "title_id": "Laporan Aktuasi Purchase Order",
+        "category": "purchasing",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "PURCHASE_ORDER_ACTUATION",
+        "description": "PO actuation tracking",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "actuationNum", "label": "Actuation Number"},
+            {"key": "actuationDate", "label": "Date"},
+            {"key": "purchaseOrderNum", "label": "PO Reference"},
+            {"key": "supplierName", "label": "Supplier"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qtyOrder", "label": "Qty Order", "numeric": True},
+            {"key": "qtyReceived", "label": "Qty Received", "numeric": True},
+            {"key": "qtyInvoiced", "label": "Qty Invoiced", "numeric": True},
+            {"key": "price", "label": "Price", "numeric": True},
+            {"key": "total", "label": "Total", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+        ],
+    },
 }
 
 
@@ -1560,7 +1822,205 @@ TRX_ROW_FETCHERS = {
     "EMPLOYEE_ADVANCE": _employee_advance_rows,
     "BUDGET_DETAIL": _budget_detail_rows,
     "BUDGET_REVISION": _budget_revision_rows,
+    "PURCHASE_INVOICE": _purchase_invoice_rows,
+    "PURCHASE_RETURN": _purchase_return_rows,
+    "GOODS_RECEIPT_RETURN": _goods_receipt_return_rows,
+    "GOODS_DELIVERY_RETURN": _goods_delivery_return_rows,
+    "BILL_OF_MATERIAL": _bill_of_material_rows,
 }
+
+
+def _purchase_invoice_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                           date_from: date, date_to: date):
+    """Fetch purchase invoice rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'PURCHASE_INVOICE'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("invoiceDetails") or []:
+            rows.append({
+                "invoiceNum": payload.get("invoiceNum"),
+                "invoiceDate": str(payload.get("invoiceDate") or "")[:10],
+                "dueDate": str(payload.get("dueDate") or "")[:10],
+                "supplierName": payload.get("supplierName"),
+                "branchName": payload.get("branchName"),
+                "productName": d.get("productName"),
+                "productCode": d.get("productCode"),
+                "uomName": d.get("uomName"),
+                "qty": _num(d.get("qty")),
+                "price": _num(d.get("price")),
+                "discountPercent": _num(d.get("discountPercent")),
+                "subTotal": _num(d.get("subTotal")),
+                "taxPercent": _num(d.get("taxPercent")),
+                "total": _num(d.get("total")),
+                "statusName": payload.get("statusName"),
+                "notes": payload.get("notes"),
+            })
+    return rows
+
+
+def _purchase_return_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                          date_from: date, date_to: date):
+    """Fetch purchase return rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'PURCHASE_RETURN'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("returnDetails") or []:
+            rows.append({
+                "returnNum": payload.get("returnNum"),
+                "returnDate": str(payload.get("returnDate") or "")[:10],
+                "invoiceNum": payload.get("invoiceNum"),
+                "supplierName": payload.get("supplierName"),
+                "branchName": payload.get("branchName"),
+                "warehouseName": payload.get("warehouseName"),
+                "productName": d.get("productName"),
+                "productCode": d.get("productCode"),
+                "uomName": d.get("uomName"),
+                "qty": _num(d.get("qty")),
+                "price": _num(d.get("price")),
+                "total": _num(d.get("total")),
+                "reason": d.get("reason"),
+                "statusName": payload.get("statusName"),
+                "notes": payload.get("notes"),
+            })
+    return rows
+
+
+def _goods_receipt_return_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                               date_from: date, date_to: date):
+    """Fetch goods receipt return rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'GOODS_RECEIPT_RETURN'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("returnDetails") or []:
+            rows.append({
+                "returnNum": payload.get("returnNum"),
+                "returnDate": str(payload.get("returnDate") or "")[:10],
+                "goodsReceiptNum": payload.get("goodsReceiptNum"),
+                "supplierName": payload.get("supplierName"),
+                "branchName": payload.get("branchName"),
+                "warehouseName": payload.get("warehouseName"),
+                "productName": d.get("productName"),
+                "productCode": d.get("productCode"),
+                "uomName": d.get("uomName"),
+                "qty": _num(d.get("qty")),
+                "hpp": _num(d.get("hpp")),
+                "total": _num(d.get("total")),
+                "reason": d.get("reason"),
+                "statusName": payload.get("statusName"),
+                "notes": payload.get("notes"),
+            })
+    return rows
+
+
+def _goods_delivery_return_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                                 date_from: date, date_to: date):
+    """Fetch goods delivery return rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'GOODS_DELIVERY_RETURN'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("returnDetails") or []:
+            rows.append({
+                "returnNum": payload.get("returnNum"),
+                "returnDate": str(payload.get("returnDate") or "")[:10],
+                "goodsDeliveryNum": payload.get("goodsDeliveryNum"),
+                "branchName": payload.get("branchName"),
+                "destinationName": payload.get("destinationName"),
+                "productName": d.get("productName"),
+                "productCode": d.get("productCode"),
+                "uomName": d.get("uomName"),
+                "qty": _num(d.get("qty")),
+                "hpp": _num(d.get("hpp")),
+                "total": _num(d.get("total")),
+                "reason": d.get("reason"),
+                "statusName": payload.get("statusName"),
+                "notes": payload.get("notes"),
+            })
+    return rows
+
+
+def _bill_of_material_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                            date_from: date, date_to: date):
+    """Fetch BOM rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'BILL_OF_MATERIAL'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("bomDetails") or []:
+            rows.append({
+                "bomNum": payload.get("bomNum"),
+                "bomDate": str(payload.get("bomDate") or "")[:10],
+                "branchName": payload.get("branchName"),
+                "productName": payload.get("productName"),
+                "productCode": payload.get("productCode"),
+                "uomName": payload.get("uomName"),
+                "materialName": d.get("materialName"),
+                "materialCode": d.get("materialCode"),
+                "materialUom": d.get("materialUom"),
+                "qty": _num(d.get("qty")),
+                "hpp": _num(d.get("hpp")),
+                "total": _num(d.get("total")),
+                "statusName": payload.get("statusName"),
+            })
+    return rows
 
 
 def _rpt_rows(cur, company_id: int, report_key: str, entity: str,
