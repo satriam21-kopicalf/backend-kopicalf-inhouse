@@ -374,6 +374,371 @@ REPORTS: typing.Dict[str, dict] = {
             {"key": "notes", "label": "Notes"},
         ],
     },
+    # ─────────────────────────────────────────────────────────────────────────────
+    # ADDITIONAL INVENTORY REPORTS (T1)
+    # ─────────────────────────────────────────────────────────────────────────────
+    "inventory-variance-opname-report": {
+        "title": "Inventory Variance Opname Report",
+        "title_id": "Laporan Varians Opname Inventori",
+        "category": "inventory",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "STOCK_OPNAME",
+        "description": "Stock opname variance analysis",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "stockOpnameNum", "label": "Opname Number"},
+            {"key": "stockOpnameDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "locationName", "label": "Location"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "stockQty", "label": "Stock Qty", "numeric": True},
+            {"key": "qty", "label": "Counted Qty", "numeric": True},
+            {"key": "diffQty", "label": "Variance Qty", "numeric": True},
+            {"key": "hpp", "label": "HPP", "numeric": True},
+            {"key": "diffValue", "label": "Variance Value", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+        ],
+    },
+    "transfer-report": {
+        "title": "Transfer Report",
+        "title_id": "Laporan Transfer",
+        "category": "inventory",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "TRANSFER",
+        "description": "Inventory transfer between warehouses",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "transferNum", "label": "Transfer Number"},
+            {"key": "transferDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "sourceWarehouse", "label": "Source Warehouse"},
+            {"key": "destinationWarehouse", "label": "Destination Warehouse"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "hpp", "label": "HPP", "numeric": True},
+            {"key": "total", "label": "Total Value", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    "item-journal-report": {
+        "title": "Item Journal Report",
+        "title_id": "Laporan Jurnal Barang",
+        "category": "inventory",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "ITEM_JOURNAL",
+        "description": "Item movement journal",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "journalNum", "label": "Journal Number"},
+            {"key": "journalDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "transactionType", "label": "Transaction Type"},
+            {"key": "inQty", "label": "In Qty", "numeric": True},
+            {"key": "outQty", "label": "Out Qty", "numeric": True},
+            {"key": "balanceQty", "label": "Balance Qty", "numeric": True},
+            {"key": "hpp", "label": "HPP", "numeric": True},
+            {"key": "reference", "label": "Reference"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    # ─────────────────────────────────────────────────────────────────────────────
+    # PRODUCTION REPORTS (T1)
+    # ─────────────────────────────────────────────────────────────────────────────
+    "production-order-report": {
+        "title": "Production Order Report",
+        "title_id": "Laporan Order Produksi",
+        "category": "production",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "PRODUCTION_ORDER",
+        "description": "Production order details",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "productionOrderNum", "label": "PO Number"},
+            {"key": "productionOrderDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "hpp", "label": "HPP", "numeric": True},
+            {"key": "total", "label": "Total", "numeric": True},
+            {"key": "dueDate", "label": "Due Date"},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    "production-material-report": {
+        "title": "Production Material Report",
+        "title_id": "Laporan Material Produksi",
+        "category": "production",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "PRODUCTION_MATERIAL",
+        "description": "Production material consumption",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "materialIssueNum", "label": "Issue Number"},
+            {"key": "materialIssueDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "productionOrderNum", "label": "Production Order"},
+            {"key": "productName", "label": "Output Product"},
+            {"key": "materialName", "label": "Material"},
+            {"key": "materialCode", "label": "Material Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "hpp", "label": "HPP", "numeric": True},
+            {"key": "total", "label": "Total Value", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    # ─────────────────────────────────────────────────────────────────────────────
+    # SALES REPORTS (T1)
+    # ─────────────────────────────────────────────────────────────────────────────
+    "sales-payment-summary-report": {
+        "title": "Sales Payment Summary Report",
+        "title_id": "Laporan Ringkasan Pembayaran Penjualan",
+        "category": "sales",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "SALES_PAYMENT",
+        "description": "Sales payment by method summary",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "paymentNum", "label": "Payment Number"},
+            {"key": "paymentDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "salesNum", "label": "Sales Number"},
+            {"key": "paymentMethodTypeName", "label": "Payment Type"},
+            {"key": "paymentMethodName", "label": "Payment Method"},
+            {"key": "amount", "label": "Amount", "numeric": True},
+            {"key": "cardNumber", "label": "Card Number"},
+            {"key": "cardHolder", "label": "Card Holder"},
+            {"key": "approvalCode", "label": "Approval Code"},
+            {"key": "statusName", "label": "Status"},
+        ],
+    },
+    "sales-recapitulation-report": {
+        "title": "Sales Recapitulation Report",
+        "title_id": "Laporan Rekapitulasi Penjualan",
+        "category": "sales",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "PRODUCT_SALES",
+        "description": "Sales summary by product",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "salesNum", "label": "Sales Number"},
+            {"key": "salesDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "customerName", "label": "Customer"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "price", "label": "Price", "numeric": True},
+            {"key": "discountPercent", "label": "Discount %", "numeric": True},
+            {"key": "subTotal", "label": "Sub Total", "numeric": True},
+            {"key": "taxPercent", "label": "Tax %", "numeric": True},
+            {"key": "total", "label": "Total", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+        ],
+    },
+    # ─────────────────────────────────────────────────────────────────────────────
+    # PRODUCT SALES REPORTS (T1)
+    # ─────────────────────────────────────────────────────────────────────────────
+    "product-sales-recapitulation-report": {
+        "title": "Product Sales Recapitulation Report",
+        "title_id": "Laporan Rekapitulasi Penjualan Produk",
+        "category": "product-sales",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "PRODUCT_SALES",
+        "description": "Product sales summary",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "salesNum", "label": "Sales Number"},
+            {"key": "salesDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "customerName", "label": "Customer"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "price", "label": "Price", "numeric": True},
+            {"key": "discountPercent", "label": "Discount %", "numeric": True},
+            {"key": "subTotal", "label": "Sub Total", "numeric": True},
+            {"key": "taxPercent", "label": "Tax %", "numeric": True},
+            {"key": "total", "label": "Total", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+        ],
+    },
+    "product-sales-actuation-report": {
+        "title": "Product Sales Actuation Report",
+        "title_id": "Laporan Aktuasi Penjualan Produk",
+        "category": "product-sales",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "PRODUCT_SALES_ACTUATION",
+        "description": "Product sales actuation details",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "actuationNum", "label": "Actuation Number"},
+            {"key": "actuationDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "productSalesNum", "label": "Sales Reference"},
+            {"key": "productName", "label": "Product"},
+            {"key": "productCode", "label": "Product Code"},
+            {"key": "uomName", "label": "Unit"},
+            {"key": "qtyOrdered", "label": "Qty Ordered", "numeric": True},
+            {"key": "qtyDelivered", "label": "Qty Delivered", "numeric": True},
+            {"key": "qtyInvoiced", "label": "Qty Invoiced", "numeric": True},
+            {"key": "price", "label": "Price", "numeric": True},
+            {"key": "total", "label": "Total", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    # ─────────────────────────────────────────────────────────────────────────────
+    # ACCOUNTING REPORTS (T1)
+    # ─────────────────────────────────────────────────────────────────────────────
+    "account-receivable-suspense-report": {
+        "title": "Account Receivable Suspense Report",
+        "title_id": "Laporan Piutang Suspense",
+        "category": "accounting",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "AR_SUSPENSE",
+        "description": "Account receivable suspense entries",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "suspenseNum", "label": "Document Number"},
+            {"key": "suspenseDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "customerName", "label": "Customer"},
+            {"key": "accountName", "label": "Account"},
+            {"key": "accountNo", "label": "Account No"},
+            {"key": "description", "label": "Description"},
+            {"key": "debit", "label": "Debit", "numeric": True},
+            {"key": "credit", "label": "Credit", "numeric": True},
+            {"key": "balance", "label": "Balance", "numeric": True},
+            {"key": "dueDate", "label": "Due Date"},
+            {"key": "statusName", "label": "Status"},
+        ],
+    },
+    "account-payable-suspense-report": {
+        "title": "Account Payable Suspense Report",
+        "title_id": "Laporan Hutang Suspense",
+        "category": "accounting",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "AP_SUSPENSE",
+        "description": "Account payable suspense entries",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "suspenseNum", "label": "Document Number"},
+            {"key": "suspenseDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "supplierName", "label": "Supplier"},
+            {"key": "accountName", "label": "Account"},
+            {"key": "accountNo", "label": "Account No"},
+            {"key": "description", "label": "Description"},
+            {"key": "debit", "label": "Debit", "numeric": True},
+            {"key": "credit", "label": "Credit", "numeric": True},
+            {"key": "balance", "label": "Balance", "numeric": True},
+            {"key": "dueDate", "label": "Due Date"},
+            {"key": "statusName", "label": "Status"},
+        ],
+    },
+    # ─────────────────────────────────────────────────────────────────────────────
+    # FINANCE REPORTS (T1)
+    # ─────────────────────────────────────────────────────────────────────────────
+    "employee-advance-report": {
+        "title": "Employee Advance Payment Report",
+        "title_id": "Laporan Advance Karyawan",
+        "category": "finance",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "EMPLOYEE_ADVANCE",
+        "description": "Employee advance payments",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "advanceNum", "label": "Advance Number"},
+            {"key": "advanceDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "employeeName", "label": "Employee"},
+            {"key": "departmentName", "label": "Department"},
+            {"key": "purposeName", "label": "Purpose"},
+            {"key": "description", "label": "Description"},
+            {"key": "amount", "label": "Amount", "numeric": True},
+            {"key": "balance", "label": "Balance", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+            {"key": "notes", "label": "Notes"},
+        ],
+    },
+    # ─────────────────────────────────────────────────────────────────────────────
+    # BUDGETING REPORTS (T1)
+    # ─────────────────────────────────────────────────────────────────────────────
+    "budget-detail-report": {
+        "title": "Budget Detail Report",
+        "title_id": "Laporan Detail Budget",
+        "category": "budgeting",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "BUDGET_DETAIL",
+        "description": "Budget detail by account",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "budgetNum", "label": "Budget Number"},
+            {"key": "budgetDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "departmentName", "label": "Department"},
+            {"key": "accountName", "label": "Account"},
+            {"key": "accountNo", "label": "Account No"},
+            {"key": "periodName", "label": "Period"},
+            {"key": "budgetAmount", "label": "Budget Amount", "numeric": True},
+            {"key": "realizedAmount", "label": "Realized", "numeric": True},
+            {"key": "remainingAmount", "label": "Remaining", "numeric": True},
+            {"key": "percentageUsed", "label": "Used %", "numeric": True},
+            {"key": "statusName", "label": "Status"},
+        ],
+    },
+    "budget-increase-decrease-report": {
+        "title": "Budget Increase/Decrease Report",
+        "title_id": "Laporan Kenaikan/Penurunan Budget",
+        "category": "budgeting",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "BUDGET_REVISION",
+        "description": "Budget revision history",
+        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "columns": [
+            {"key": "revisionNum", "label": "Revision Number"},
+            {"key": "revisionDate", "label": "Date"},
+            {"key": "branchName", "label": "Branch"},
+            {"key": "departmentName", "label": "Department"},
+            {"key": "accountName", "label": "Account"},
+            {"key": "periodName", "label": "Period"},
+            {"key": "previousAmount", "label": "Previous Amount", "numeric": True},
+            {"key": "changeAmount", "label": "Change", "numeric": True},
+            {"key": "newAmount", "label": "New Amount", "numeric": True},
+            {"key": "changeType", "label": "Change Type"},
+            {"key": "reason", "label": "Reason"},
+            {"key": "statusName", "label": "Status"},
+        ],
+    },
 }
 
 
@@ -783,6 +1148,396 @@ def _memorial_journal_rows(cur, company_id: int, branch_esb_id: typing.Optional[
     return rows
 
 
+def _generic_trx_rows(cur, entity_type: str, company_id: int, branch_esb_id: typing.Optional[str],
+                      date_from: date, date_to: date, row_extractor: typing.Callable):
+    """Generic transaction row fetcher for common entities."""
+    sql = f"""
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = %s
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, entity_type, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        details_key = entity_type.lower() + "Details"
+        for d in payload.get(details_key) or []:
+            rows.append(row_extractor(payload, d))
+    return rows
+
+
+def _transfer_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                  date_from: date, date_to: date):
+    """Fetch transfer rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'TRANSFER'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("transferDetails") or []:
+            rows.append({
+                "transferNum": payload.get("transferNum"),
+                "transferDate": str(payload.get("transferDate") or "")[:10],
+                "branchName": payload.get("branchName"),
+                "sourceWarehouse": payload.get("sourceWarehouseName"),
+                "destinationWarehouse": payload.get("destinationWarehouseName"),
+                "productName": d.get("productName"),
+                "productCode": d.get("productCode"),
+                "uomName": d.get("uomName"),
+                "qty": _num(d.get("qty")),
+                "hpp": _num(d.get("hpp")),
+                "total": _num(d.get("total")),
+                "statusName": payload.get("statusName"),
+                "notes": payload.get("notes"),
+            })
+    return rows
+
+
+def _production_order_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                           date_from: date, date_to: date):
+    """Fetch production order rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'PRODUCTION_ORDER'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("productionOrderDetails") or []:
+            rows.append({
+                "productionOrderNum": payload.get("productionOrderNum"),
+                "productionOrderDate": str(payload.get("productionOrderDate") or "")[:10],
+                "branchName": payload.get("branchName"),
+                "productName": d.get("productName"),
+                "productCode": d.get("productCode"),
+                "uomName": d.get("uomName"),
+                "qty": _num(d.get("qty")),
+                "hpp": _num(d.get("hpp")),
+                "total": _num(d.get("total")),
+                "dueDate": str(d.get("dueDate") or "")[:10],
+                "statusName": payload.get("statusName"),
+                "notes": payload.get("notes"),
+            })
+    return rows
+
+
+def _production_material_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                             date_from: date, date_to: date):
+    """Fetch production material rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'PRODUCTION_MATERIAL'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("materialDetails") or []:
+            rows.append({
+                "materialIssueNum": payload.get("materialIssueNum"),
+                "materialIssueDate": str(payload.get("materialIssueDate") or "")[:10],
+                "branchName": payload.get("branchName"),
+                "productionOrderNum": payload.get("productionOrderNum"),
+                "productName": payload.get("productName"),
+                "materialName": d.get("materialName"),
+                "materialCode": d.get("materialCode"),
+                "uomName": d.get("uomName"),
+                "qty": _num(d.get("qty")),
+                "hpp": _num(d.get("hpp")),
+                "total": _num(d.get("total")),
+                "statusName": payload.get("statusName"),
+                "notes": payload.get("notes"),
+            })
+    return rows
+
+
+def _sales_payment_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                        date_from: date, date_to: date):
+    """Fetch sales payment rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'SALES_PAYMENT'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("paymentDetails") or []:
+            rows.append({
+                "paymentNum": payload.get("paymentNum"),
+                "paymentDate": str(payload.get("paymentDate") or "")[:10],
+                "branchName": payload.get("branchName"),
+                "salesNum": payload.get("salesNum"),
+                "paymentMethodTypeName": d.get("paymentMethodTypeName"),
+                "paymentMethodName": d.get("paymentMethodName"),
+                "amount": _num(d.get("amount")),
+                "cardNumber": d.get("cardNumber"),
+                "cardHolder": d.get("cardHolder"),
+                "approvalCode": d.get("approvalCode"),
+                "statusName": payload.get("statusName"),
+            })
+    return rows
+
+
+def _product_sales_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                        date_from: date, date_to: date):
+    """Fetch product sales rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'PRODUCT_SALES'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("salesDetails") or []:
+            rows.append({
+                "salesNum": payload.get("salesNum"),
+                "salesDate": str(payload.get("salesDate") or "")[:10],
+                "branchName": payload.get("branchName"),
+                "customerName": payload.get("customerName"),
+                "productName": d.get("productName"),
+                "productCode": d.get("productCode"),
+                "uomName": d.get("uomName"),
+                "qty": _num(d.get("qty")),
+                "price": _num(d.get("price")),
+                "discountPercent": _num(d.get("discountPercent")),
+                "subTotal": _num(d.get("subTotal")),
+                "taxPercent": _num(d.get("taxPercent")),
+                "total": _num(d.get("total")),
+                "statusName": payload.get("statusName"),
+            })
+    return rows
+
+
+def _ar_suspense_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                       date_from: date, date_to: date):
+    """Fetch AR suspense rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'AR_SUSPENSE'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("suspenseDetails") or []:
+            rows.append({
+                "suspenseNum": payload.get("suspenseNum"),
+                "suspenseDate": str(payload.get("suspenseDate") or "")[:10],
+                "branchName": payload.get("branchName"),
+                "customerName": payload.get("customerName"),
+                "accountName": d.get("accountName"),
+                "accountNo": d.get("accountNo"),
+                "description": d.get("description"),
+                "debit": _num(d.get("debit")),
+                "credit": _num(d.get("credit")),
+                "balance": _num(d.get("balance")),
+                "dueDate": str(d.get("dueDate") or "")[:10],
+                "statusName": payload.get("statusName"),
+            })
+    return rows
+
+
+def _ap_suspense_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                       date_from: date, date_to: date):
+    """Fetch AP suspense rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'AP_SUSPENSE'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("suspenseDetails") or []:
+            rows.append({
+                "suspenseNum": payload.get("suspenseNum"),
+                "suspenseDate": str(payload.get("suspenseDate") or "")[:10],
+                "branchName": payload.get("branchName"),
+                "supplierName": payload.get("supplierName"),
+                "accountName": d.get("accountName"),
+                "accountNo": d.get("accountNo"),
+                "description": d.get("description"),
+                "debit": _num(d.get("debit")),
+                "credit": _num(d.get("credit")),
+                "balance": _num(d.get("balance")),
+                "dueDate": str(d.get("dueDate") or "")[:10],
+                "statusName": payload.get("statusName"),
+            })
+    return rows
+
+
+def _employee_advance_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                            date_from: date, date_to: date):
+    """Fetch employee advance rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'EMPLOYEE_ADVANCE'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("advanceDetails") or []:
+            rows.append({
+                "advanceNum": payload.get("advanceNum"),
+                "advanceDate": str(payload.get("advanceDate") or "")[:10],
+                "branchName": payload.get("branchName"),
+                "employeeName": payload.get("employeeName"),
+                "departmentName": payload.get("departmentName"),
+                "purposeName": d.get("purposeName"),
+                "description": d.get("description"),
+                "amount": _num(d.get("amount")),
+                "balance": _num(d.get("balance")),
+                "statusName": payload.get("statusName"),
+                "notes": payload.get("notes"),
+            })
+    return rows
+
+
+def _budget_detail_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                         date_from: date, date_to: date):
+    """Fetch budget detail rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'BUDGET_DETAIL'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("budgetDetails") or []:
+            budget_amount = _num(d.get("budgetAmount"))
+            realized_amount = _num(d.get("realizedAmount"))
+            remaining = (budget_amount - realized_amount) if (budget_amount is not None and realized_amount is not None) else None
+            pct_used = ((realized_amount / budget_amount * 100) if (budget_amount and realized_amount and budget_amount != 0) else None)
+            rows.append({
+                "budgetNum": payload.get("budgetNum"),
+                "budgetDate": str(payload.get("budgetDate") or "")[:10],
+                "branchName": payload.get("branchName"),
+                "departmentName": payload.get("departmentName"),
+                "accountName": d.get("accountName"),
+                "accountNo": d.get("accountNo"),
+                "periodName": d.get("periodName"),
+                "budgetAmount": budget_amount,
+                "realizedAmount": realized_amount,
+                "remainingAmount": remaining,
+                "percentageUsed": pct_used,
+                "statusName": payload.get("statusName"),
+            })
+    return rows
+
+
+def _budget_revision_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
+                           date_from: date, date_to: date):
+    """Fetch budget revision rows."""
+    sql = """
+        SELECT t.payload
+        FROM trx_raw_staging t
+        WHERE t.company_id = %s AND t.entity_type = 'BUDGET_REVISION'
+          AND t.doc_date BETWEEN %s AND %s
+    """
+    params = [company_id, date_from, date_to]
+    if branch_esb_id:
+        sql += " AND t.payload->>'branchID' = %s"
+        params.append(str(branch_esb_id))
+    sql += " ORDER BY t.doc_date DESC"
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
+        for d in payload.get("revisionDetails") or []:
+            rows.append({
+                "revisionNum": payload.get("revisionNum"),
+                "revisionDate": str(payload.get("revisionDate") or "")[:10],
+                "branchName": payload.get("branchName"),
+                "departmentName": payload.get("departmentName"),
+                "accountName": d.get("accountName"),
+                "periodName": d.get("periodName"),
+                "previousAmount": _num(d.get("previousAmount")),
+                "changeAmount": _num(d.get("changeAmount")),
+                "newAmount": _num(d.get("newAmount")),
+                "changeType": d.get("changeType"),
+                "reason": d.get("reason"),
+                "statusName": payload.get("statusName"),
+            })
+    return rows
+
+
 # ─── T1 Row Fetcher Registry ───────────────────────────────────────────────────
 TRX_ROW_FETCHERS = {
     "STOCK_OPNAME": _stock_opname_rows,
@@ -795,6 +1550,16 @@ TRX_ROW_FETCHERS = {
     "RECEIPT": _receipt_rows,
     "ADVANCE_SALES": _advance_sales_rows,
     "MEMORIAL_JOURNAL": _memorial_journal_rows,
+    "TRANSFER": _transfer_rows,
+    "PRODUCTION_ORDER": _production_order_rows,
+    "PRODUCTION_MATERIAL": _production_material_rows,
+    "SALES_PAYMENT": _sales_payment_rows,
+    "PRODUCT_SALES": _product_sales_rows,
+    "AR_SUSPENSE": _ar_suspense_rows,
+    "AP_SUSPENSE": _ap_suspense_rows,
+    "EMPLOYEE_ADVANCE": _employee_advance_rows,
+    "BUDGET_DETAIL": _budget_detail_rows,
+    "BUDGET_REVISION": _budget_revision_rows,
 }
 
 
