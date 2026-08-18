@@ -1029,7 +1029,7 @@ def _stock_opname_rows(cur, company_id: int, branch_esb_id: typing.Optional[str]
         WHERE t.company_id = %s AND t.entity_type = 'STOCK_OPNAME'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1075,7 +1075,7 @@ def _fetch_trx_rows(cur, entity_type: str, company_id: int, branch_esb_id: typin
         WHERE t.company_id = %s AND t.entity_type = %s
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, entity_type, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, entity_type, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1093,7 +1093,7 @@ def _purchase_order_rows(cur, company_id: int, branch_esb_id: typing.Optional[st
         WHERE t.company_id = %s AND t.entity_type = 'PURCHASE_ORDER'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1132,7 +1132,7 @@ def _goods_receipt_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
         WHERE t.company_id = %s AND t.entity_type = 'GOODS_RECEIPT'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1171,7 +1171,7 @@ def _purchase_request_rows(cur, company_id: int, branch_esb_id: typing.Optional[
         WHERE t.company_id = %s AND t.entity_type = 'PURCHASE_REQUEST'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1208,7 +1208,7 @@ def _goods_delivery_rows(cur, company_id: int, branch_esb_id: typing.Optional[st
         WHERE t.company_id = %s AND t.entity_type = 'GOODS_DELIVERY'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1244,7 +1244,7 @@ def _manufacturing_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
         WHERE t.company_id = %s AND t.entity_type = 'SIMPLE_MANUFACTURING'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1280,7 +1280,7 @@ def _disbursement_rows(cur, company_id: int, branch_esb_id: typing.Optional[str]
         WHERE t.company_id = %s AND t.entity_type = 'DISBURSEMENT'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1315,7 +1315,7 @@ def _receipt_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
         WHERE t.company_id = %s AND t.entity_type = 'RECEIPT'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1350,7 +1350,7 @@ def _advance_sales_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
         WHERE t.company_id = %s AND t.entity_type = 'ADVANCE_SALES'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1385,7 +1385,7 @@ def _memorial_journal_rows(cur, company_id: int, branch_esb_id: typing.Optional[
         WHERE t.company_id = %s AND t.entity_type = 'MEMORIAL_JOURNAL'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1419,7 +1419,7 @@ def _generic_trx_rows(cur, entity_type: str, company_id: int, branch_esb_id: typ
         WHERE t.company_id = %s AND t.entity_type = %s
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, entity_type, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, entity_type, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1443,7 +1443,7 @@ def _transfer_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
         WHERE t.company_id = %s AND t.entity_type = 'TRANSFER'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1480,7 +1480,7 @@ def _production_order_rows(cur, company_id: int, branch_esb_id: typing.Optional[
         WHERE t.company_id = %s AND t.entity_type = 'PRODUCTION_ORDER'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1516,7 +1516,7 @@ def _production_material_rows(cur, company_id: int, branch_esb_id: typing.Option
         WHERE t.company_id = %s AND t.entity_type = 'PRODUCTION_MATERIAL'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1553,7 +1553,7 @@ def _sales_payment_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
         WHERE t.company_id = %s AND t.entity_type = 'SALES_PAYMENT'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1588,7 +1588,7 @@ def _product_sales_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
         WHERE t.company_id = %s AND t.entity_type = 'PRODUCT_SALES'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1626,7 +1626,7 @@ def _ar_suspense_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
         WHERE t.company_id = %s AND t.entity_type = 'AR_SUSPENSE'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1662,7 +1662,7 @@ def _ap_suspense_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
         WHERE t.company_id = %s AND t.entity_type = 'AP_SUSPENSE'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1698,7 +1698,7 @@ def _employee_advance_rows(cur, company_id: int, branch_esb_id: typing.Optional[
         WHERE t.company_id = %s AND t.entity_type = 'EMPLOYEE_ADVANCE'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1733,7 +1733,7 @@ def _budget_detail_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
         WHERE t.company_id = %s AND t.entity_type = 'BUDGET_DETAIL'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1773,7 +1773,7 @@ def _budget_revision_rows(cur, company_id: int, branch_esb_id: typing.Optional[s
         WHERE t.company_id = %s AND t.entity_type = 'BUDGET_REVISION'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1800,40 +1800,6 @@ def _budget_revision_rows(cur, company_id: int, branch_esb_id: typing.Optional[s
     return rows
 
 
-# ─── T1 Row Fetcher Registry ───────────────────────────────────────────────────
-TRX_ROW_FETCHERS = {
-    "STOCK_OPNAME": _stock_opname_rows,
-    "PURCHASE_ORDER": _purchase_order_rows,
-    "GOODS_RECEIPT": _goods_receipt_rows,
-    "PURCHASE_REQUEST": _purchase_request_rows,
-    "GOODS_DELIVERY": _goods_delivery_rows,
-    "SIMPLE_MANUFACTURING": _manufacturing_rows,
-    "DISBURSEMENT": _disbursement_rows,
-    "RECEIPT": _receipt_rows,
-    "ADVANCE_SALES": _advance_sales_rows,
-    "MEMORIAL_JOURNAL": _memorial_journal_rows,
-    "TRANSFER": _transfer_rows,
-    "PRODUCTION_ORDER": _production_order_rows,
-    "PRODUCTION_MATERIAL": _production_material_rows,
-    "SALES_PAYMENT": _sales_payment_rows,
-    "PRODUCT_SALES": _product_sales_rows,
-    "AR_SUSPENSE": _ar_suspense_rows,
-    "AP_SUSPENSE": _ap_suspense_rows,
-    "EMPLOYEE_ADVANCE": _employee_advance_rows,
-    "BUDGET_DETAIL": _budget_detail_rows,
-    "BUDGET_REVISION": _budget_revision_rows,
-    "PURCHASE_INVOICE": _purchase_invoice_rows,
-    "PURCHASE_RETURN": _purchase_return_rows,
-    "GOODS_RECEIPT_RETURN": _goods_receipt_return_rows,
-    "GOODS_DELIVERY_RETURN": _goods_delivery_return_rows,
-    "BILL_OF_MATERIAL": _bill_of_material_rows,
-    # Missing row fetchers added in Phase 4
-    "ADVANCE_RECAP": _advance_recap_rows,
-    "ITEM_JOURNAL": _item_journal_rows,
-    "PRODUCT_SALES_ACTUATION": _product_sales_actuation_rows,
-    "PURCHASE_INVOICE_PAYMENT": _purchase_invoice_payment_rows,
-    "PURCHASE_ORDER_ACTUATION": _purchase_order_actuation_rows,
-}
 
 
 def _purchase_invoice_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
@@ -1845,7 +1811,7 @@ def _purchase_invoice_rows(cur, company_id: int, branch_esb_id: typing.Optional[
         WHERE t.company_id = %s AND t.entity_type = 'PURCHASE_INVOICE'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1885,7 +1851,7 @@ def _purchase_return_rows(cur, company_id: int, branch_esb_id: typing.Optional[s
         WHERE t.company_id = %s AND t.entity_type = 'PURCHASE_RETURN'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1924,7 +1890,7 @@ def _goods_receipt_return_rows(cur, company_id: int, branch_esb_id: typing.Optio
         WHERE t.company_id = %s AND t.entity_type = 'GOODS_RECEIPT_RETURN'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -1963,7 +1929,7 @@ def _goods_delivery_return_rows(cur, company_id: int, branch_esb_id: typing.Opti
         WHERE t.company_id = %s AND t.entity_type = 'GOODS_DELIVERY_RETURN'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -2001,7 +1967,7 @@ def _bill_of_material_rows(cur, company_id: int, branch_esb_id: typing.Optional[
         WHERE t.company_id = %s AND t.entity_type = 'BILL_OF_MATERIAL'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -2038,7 +2004,7 @@ def _advance_recap_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
         WHERE t.company_id = %s AND t.entity_type = 'ADVANCE_RECAP'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -2072,7 +2038,7 @@ def _item_journal_rows(cur, company_id: int, branch_esb_id: typing.Optional[str]
         WHERE t.company_id = %s AND t.entity_type = 'ITEM_JOURNAL'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -2108,7 +2074,7 @@ def _product_sales_actuation_rows(cur, company_id: int, branch_esb_id: typing.Op
         WHERE t.company_id = %s AND t.entity_type = 'PRODUCT_SALES_ACTUATION'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -2145,7 +2111,7 @@ def _purchase_invoice_payment_rows(cur, company_id: int, branch_esb_id: typing.O
         WHERE t.company_id = %s AND t.entity_type = 'PURCHASE_INVOICE_PAYMENT'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -2179,7 +2145,7 @@ def _purchase_order_actuation_rows(cur, company_id: int, branch_esb_id: typing.O
         WHERE t.company_id = %s AND t.entity_type = 'PURCHASE_ORDER_ACTUATION'
           AND t.doc_date BETWEEN %s AND %s
     """
-    params = [company_id, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
     if branch_esb_id:
         sql += " AND t.payload->>'branchID' = %s"
         params.append(str(branch_esb_id))
@@ -2207,6 +2173,42 @@ def _purchase_order_actuation_rows(cur, company_id: int, branch_esb_id: typing.O
     return rows
 
 
+# ─── T1 Row Fetcher Registry ───────────────────────────────────────────────────
+TRX_ROW_FETCHERS = {
+    "STOCK_OPNAME": _stock_opname_rows,
+    "PURCHASE_ORDER": _purchase_order_rows,
+    "GOODS_RECEIPT": _goods_receipt_rows,
+    "PURCHASE_REQUEST": _purchase_request_rows,
+    "GOODS_DELIVERY": _goods_delivery_rows,
+    "SIMPLE_MANUFACTURING": _manufacturing_rows,
+    "DISBURSEMENT": _disbursement_rows,
+    "RECEIPT": _receipt_rows,
+    "ADVANCE_SALES": _advance_sales_rows,
+    "MEMORIAL_JOURNAL": _memorial_journal_rows,
+    "TRANSFER": _transfer_rows,
+    "PRODUCTION_ORDER": _production_order_rows,
+    "PRODUCTION_MATERIAL": _production_material_rows,
+    "SALES_PAYMENT": _sales_payment_rows,
+    "PRODUCT_SALES": _product_sales_rows,
+    "AR_SUSPENSE": _ar_suspense_rows,
+    "AP_SUSPENSE": _ap_suspense_rows,
+    "EMPLOYEE_ADVANCE": _employee_advance_rows,
+    "BUDGET_DETAIL": _budget_detail_rows,
+    "BUDGET_REVISION": _budget_revision_rows,
+    "PURCHASE_INVOICE": _purchase_invoice_rows,
+    "PURCHASE_RETURN": _purchase_return_rows,
+    "GOODS_RECEIPT_RETURN": _goods_receipt_return_rows,
+    "GOODS_DELIVERY_RETURN": _goods_delivery_return_rows,
+    "BILL_OF_MATERIAL": _bill_of_material_rows,
+    # Missing row fetchers added in Phase 4
+    "ADVANCE_RECAP": _advance_recap_rows,
+    "ITEM_JOURNAL": _item_journal_rows,
+    "PRODUCT_SALES_ACTUATION": _product_sales_actuation_rows,
+    "PURCHASE_INVOICE_PAYMENT": _purchase_invoice_payment_rows,
+    "PURCHASE_ORDER_ACTUATION": _purchase_order_actuation_rows,
+}
+
+
 def _rpt_rows(cur, company_id: int, report_key: str, entity: str,
               branch_esb_id: typing.Optional[str], date_from: date, date_to: date):
     """Rows from report_raw_staging: one stored row per branch/day with lines[]."""
@@ -2214,7 +2216,7 @@ def _rpt_rows(cur, company_id: int, report_key: str, entity: str,
         SELECT raw_data FROM report_raw_staging
         WHERE company_id = %s AND report_type = %s AND period_start BETWEEN %s AND %s
     """
-    params = [company_id, entity, date_from, date_to]
+    params: typing.List[typing.Any] = [company_id, entity, date_from, date_to]
     if branch_esb_id:
         sql += " AND branch_esb_id = %s"
         params.append(branch_esb_id)
