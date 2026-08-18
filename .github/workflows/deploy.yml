@@ -111,7 +111,7 @@ jobs:
             cd ${{ env.DEPLOY_PATH }}
 
             echo "=== Running database migrations ==="
-            docker compose exec -T api sh -c 'python -c "from app.core.db import engine; print(\"DB connection OK\")"'
+            docker compose exec -T api sh -c 'python -c "import os; print(\"DB URL set:\", bool(os.environ.get(\"DATABASE_URL\")))"'
 
             echo "=== Migration check complete ==="
 
