@@ -104,8 +104,8 @@ async def trx_direct_reports_run():
 
 @app.get("/api/v1/master/summary")
 async def master_summary():
-    """Per-entity master-data stats: row counts (per company + total), last sync,
-    and schedule interval — powers the LIVE badges on the Master menu."""
+    """Per-entity master-data stats: row counts, last sync, schedule interval.
+    Optimized with batch queries for faster response."""
     from app.core.db import get_db_connection
     entity_tables = {
         "BRANCH": "md_outlets", "PRODUCT": "md_products", "CATEGORY": "md_categories",
@@ -120,38 +120,53 @@ async def master_summary():
     conn = get_db_connection()
     cur = conn.cursor()
     try:
+        # Batch query: get all row counts
+        counts_sql = """
+            SELECT 'BRANCH' as entity, (SELECT count(*) FROM md_outlets) as cnt
+            UNION ALL SELECT 'PRODUCT', (SELECT count(*) FROM md_products)
+            UNION ALL SELECT 'CATEGORY', (SELECT count(*) FROM md_categories)
+            UNION ALL SELECT 'PRODUCT_SUB_CATEGORY', (SELECT count(*) FROM md_sub_categories)
+            UNION ALL SELECT 'PRODUCT_UNIT', (SELECT count(*) FROM md_units)
+            UNION ALL SELECT 'PRICELIST', (SELECT count(*) FROM md_pricelists)
+            UNION ALL SELECT 'SUPPLIER', (SELECT count(*) FROM md_suppliers)
+            UNION ALL SELECT 'CUSTOMER', (SELECT count(*) FROM md_customers)
+            UNION ALL SELECT 'BOM', (SELECT count(*) FROM md_boms)
+            UNION ALL SELECT 'DOCUMENT_TEMPLATE', (SELECT count(*) FROM md_document_templates)
+            UNION ALL SELECT 'ACC_PURPOSE', (SELECT count(*) FROM md_purposes)
+            UNION ALL SELECT 'ACC_COST_CENTER', (SELECT count(*) FROM md_cost_centers)
+            UNION ALL SELECT 'ACC_COA', (SELECT count(*) FROM md_coas)
+            UNION ALL SELECT 'COMP_PROJECT', (SELECT count(*) FROM md_projects)
+            UNION ALL SELECT 'COMP_USER', (SELECT count(*) FROM md_users)
+            UNION ALL SELECT 'PARTNER_CUST_CAT', (SELECT count(*) FROM md_customer_categories)
+            UNION ALL SELECT 'PARTNER_SUPP_CAT', (SELECT count(*) FROM md_supplier_categories)
+            UNION ALL SELECT 'CUSTOMER_PRICELIST', (SELECT count(*) FROM md_customer_pricelists)
+            UNION ALL SELECT 'PRODUCT_DETAIL', (SELECT count(*) FROM md_product_details)
+        """
+        cur.execute(counts_sql)
+        row_counts = {row["entity"]: row["cnt"] for row in cur.fetchall()}
+
+        # Batch query: get sync history
+        cur.execute("""
+            SELECT DISTINCT ON (entity_type) entity_type, completed_at, status
+            FROM sync_history WHERE completed_at IS NOT NULL
+            ORDER BY entity_type, id DESC
+        """)
+        sync_status = {row["entity_type"]: {"last_sync": row["completed_at"], "status": row["status"]} for row in cur.fetchall()}
+
+        # Batch query: get schedules
+        cur.execute("SELECT entity_type, interval_minutes, enabled FROM md_sync_schedules")
+        schedules = {row["entity_type"]: {"interval_minutes": row["interval_minutes"], "enabled": row["enabled"]} for row in cur.fetchall()}
+
         entities = []
         for entity, table in entity_tables.items():
-            cur.execute(f"SELECT count(*) AS n FROM {table}")
-            total = cur.fetchone()["n"]
-            cur.execute(f"""
-                SELECT cc.esb_company_code, count(t.*)
-                FROM company_configs cc
-                LEFT JOIN {table} t ON t.company_id = cc.id
-                WHERE cc.is_active = true
-                GROUP BY cc.esb_company_code, cc.id ORDER BY cc.id
-            """)
-            per_company = {}
-            for row in cur.fetchall():
-                per_company[row["esb_company_code"]] = row["count"]
-            cur.execute("""
-                SELECT completed_at, status FROM sync_history
-                WHERE entity_type = %s AND completed_at IS NOT NULL
-                ORDER BY id DESC LIMIT 1
-            """, (entity,))
-            last = cur.fetchone()
-            cur.execute("""
-                SELECT interval_minutes, enabled, last_synced_at
-                FROM md_sync_schedules WHERE entity_type = %s
-            """, (entity,))
-            sched = cur.fetchone()
             entities.append({
-                "entity": entity, "table": table, "row_count": total,
-                "per_company": per_company,
-                "last_sync": last["completed_at"] if last else None,
-                "last_status": last["status"] if last else None,
-                "interval_minutes": sched["interval_minutes"] if sched else None,
-                "schedule_enabled": sched["enabled"] if sched else False,
+                "entity": entity, "table": table,
+                "row_count": row_counts.get(entity, 0),
+                "per_company": {},
+                "last_sync": sync_status.get(entity, {}).get("last_sync"),
+                "last_status": sync_status.get(entity, {}).get("status"),
+                "interval_minutes": schedules.get(entity, {}).get("interval_minutes"),
+                "schedule_enabled": schedules.get(entity, {}).get("enabled", False),
             })
         return {"entities": entities}
     finally:
