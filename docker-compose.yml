@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   api:
-    build: .
+    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8005
     ports:
       - "8005:8005"
@@ -13,10 +13,16 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   # Beat scheduler only (single instance; dispatches routed tasks to queues)
   celery_beat:
-    build: .
+    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
     command: celery -A app.core.worker beat --loglevel=info
     env_file:
       - .env
@@ -29,7 +35,7 @@ services:
   # Master-data lane: infrequent master sync (interval configurable via
   # engine_settings; dispatched by the 5-min router)
   worker_master:
-    build: .
+    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
     command: celery -A app.core.worker worker -Q queue_master --concurrency=4 --loglevel=info
     env_file:
       - .env
@@ -44,7 +50,7 @@ services:
 
   # Daily lane: TRX delta + direct reports (live 30-min delta + deep 06:00) + audit
   worker_trx_daily:
-    build: .
+    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
     command: celery -A app.core.worker worker -Q queue_sync --concurrency=4 --loglevel=info
     env_file:
       - .env
@@ -58,10 +64,10 @@ services:
     restart: unless-stopped
 
   # Lane A: historical backfill, TRX + RPT (night window 19:00-08:00 WIB; parallel across
-  # companies via bf_company_{id} Redis locks — one task per company at a time;
+  # companies via bf_company_{id} Redis locks - one task per company at a time;
   # dispatch order is CALF-first round-robin)
   worker_backfill:
-    build: .
+    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
     command: celery -A app.core.worker worker -Q queue_backfill --concurrency=6 --loglevel=info
     env_file:
       - .env
@@ -76,7 +82,7 @@ services:
 
   # Report queries + async exports (on-demand, API-facing; parallel XLSX)
   worker_report:
-    build: .
+    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
     command: celery -A app.core.worker worker -Q queue_report,queue_export --concurrency=4 --loglevel=info
     env_file:
       - .env

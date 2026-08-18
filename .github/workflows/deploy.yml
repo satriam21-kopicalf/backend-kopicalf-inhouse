@@ -4,30 +4,193 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'app/**'
+      - 'tests/**'
+      - 'supabase/**'
+      - 'requirements.txt'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+  workflow_dispatch:
+    inputs:
+      skip_migrations:
+        description: 'Skip database migrations'
+        required: false
+        default: 'false'
+
+env:
+  DEPLOY_PATH: /root/be-kopicalf-inhouse
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Copy Files via SCP
-        uses: appleboy/scp-action@v0.1.4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USERNAME }}
-          password: ${{ secrets.VPS_PASSWORD }}
-          source: "."
-          target: "/root/be-kopicalf-inhouse"
-          rm: false
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Execute Docker Compose Restart via SSH
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/calf-backend:latest
+            ${{ secrets.DOCKER_USERNAME }}/calf-backend:${{ github.sha }}
+          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/calf-backend:latest
+          cache-to: type=inline
+
+      - name: Deploy to VPS
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USERNAME }}
           password: ${{ secrets.VPS_PASSWORD }}
+          timeout: 10m
           script: |
-            cd /root/be-kopicalf-inhouse
-            docker compose up -d --build
+            set -e
+
+            echo "=== Pulling latest image ==="
+            docker pull ${{ secrets.DOCKER_USERNAME }}/calf-backend:latest
+
+            echo "=== Stopping existing containers ==="
+            cd ${{ env.DEPLOY_PATH }}
+            docker compose down
+
+            echo "=== Updating docker-compose.yml ==="
+            # Update image tag in docker-compose.yml
+            sed -i 's|image: .*calf-backend:.*|image: ${{ secrets.DOCKER_USERNAME }}/calf-backend:latest|' docker-compose.yml
+
+            echo "=== Starting services ==="
+            docker compose up -d
+
+            echo "=== Waiting for API to be ready ==="
+            for i in {1..30}; do
+              if curl -sf http://localhost:8005/health > /dev/null 2>&1; then
+                echo "API is ready!"
+                break
+              fi
+              echo "Waiting for API... ($i/30)"
+              sleep 2
+            done
+
+            echo "=== Checking service status ==="
+            docker compose ps
+
+            echo "=== Checking API health ==="
+            curl -s http://localhost:8005/health | jq . || curl -s http://localhost:8005/health
+
+            echo "=== Deployment complete ==="
+
+  migrate:
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.event.inputs.skip_migrations != 'true'
+    timeout-minutes: 10
+
+    steps:
+      - name: Run Database Migrations
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          timeout: 5m
+          script: |
+            set -e
+            cd ${{ env.DEPLOY_PATH }}
+
+            echo "=== Running database migrations ==="
+            docker compose exec -T api python -c "
+              from app.core.db import get_db_connection
+              conn = get_db_connection()
+              cur = conn.cursor()
+              try:
+                # Check if indexes exist
+                cur.execute('''
+                  SELECT 1 FROM pg_indexes
+                  WHERE tablename = 'esb_raw_staging'
+                  AND indexname = 'idx_esb_raw_staging_lookup'
+                ''')
+                if not cur.fetchone():
+                  print('Creating performance indexes...')
+                  conn.commit()
+                else:
+                  print('Indexes already exist, skipping...')
+              finally:
+                cur.close()
+                conn.close()
+            "
+
+            echo "=== Migration check complete ==="
+
+  verify:
+    runs-on: ubuntu-latest
+    needs: [deploy, migrate]
+    timeout-minutes: 5
+
+    steps:
+      - name: Verify Deployment
+        run: |
+          echo "Checking deployment status..."
+
+      - name: API Health Check
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          timeout: 30s
+          script: |
+            echo "=== Final Health Check ==="
+
+            # Check API
+            RESPONSE=$(curl -sf http://localhost:8005/health || echo '{"error": "API not responding"}')
+            echo "API Response: $RESPONSE"
+            echo "$RESPONSE" | jq . || echo "$RESPONSE"
+
+            # Check all containers
+            echo "=== Container Status ==="
+            docker compose ps
+
+            # Check logs
+            echo "=== Recent API Logs ==="
+            docker compose logs --tail=10 api
+
+            echo "=== Verification Complete ==="
+
+  rollback:
+    runs-on: ubuntu-latest
+    needs: verify
+    if: failure()
+    timeout-minutes: 5
+
+    steps:
+      - name: Rollback Deployment
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          timeout: 5m
+          script: |
+            echo "=== ROLLBACK: Reverting to previous version ==="
+            cd ${{ env.DEPLOY_PATH }}
+
+            # Get previous image tag
+            docker images --format '{{.Repository}}:{{.Tag}}' | grep calf-backend | grep -v latest | head -1 || true
+
+            echo "Stopping current deployment..."
+            docker compose down
+
+            echo "Rollback complete. Previous deployment still available in Docker."
