@@ -131,7 +131,9 @@ async def master_summary():
                 WHERE cc.is_active = true
                 GROUP BY cc.esb_company_code, cc.id ORDER BY cc.id
             """)
-            per_company = {r[0]: r[1] for r in cur.fetchall()}
+            per_company = {}
+            for row in cur.fetchall():
+                per_company[row["esb_company_code"]] = row["count"]
             cur.execute("""
                 SELECT completed_at, status FROM sync_history
                 WHERE entity_type = %s AND completed_at IS NOT NULL
