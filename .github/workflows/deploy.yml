@@ -6,7 +6,6 @@ on:
       - main
     paths:
       - 'app/**'
-      - 'tests/**'
       - 'supabase/**'
       - 'requirements.txt'
       - 'Dockerfile'
