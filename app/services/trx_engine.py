@@ -186,7 +186,7 @@ def _parse_date(val) -> typing.Optional[date]:
         return None
 
 
-def _in_night_window(now_jkt: datetime = None) -> bool:
+def _in_night_window(now_jkt: typing.Optional[datetime] = None) -> bool:
     # Changed to 24-hour mode, always allow backfill
     return True
 
@@ -269,7 +269,7 @@ def _iter_index_rows(client: ESBClient, cfg: dict, date_from: date, date_to: dat
     page = 1
     total_pages = 1
     while page <= total_pages:
-        params = {"page": page, "limit": PAGE_SIZE}
+        params: typing.Dict[str, typing.Any] = {"page": page, "limit": PAGE_SIZE}
         if cfg["date_filter"]:
             params[cfg["date_filter"][0]] = date_from.isoformat()
             params[cfg["date_filter"][1]] = date_to.isoformat()
@@ -328,7 +328,7 @@ def _reconcile_surrogates(cur, company_id: int, entity: str, cfg: dict,
     for r in cur.fetchall():
         key = (str(r["ref"] or ""), str(r["d"] or "")[:10], str(r["bid"] or ""))
         groups.setdefault(key, []).append(r)
-    doomed = []
+    doomed: typing.List[typing.Any] = []
     for key, rows in groups.items():
         keep = pending_counts.get(key, 0)
         rows.sort(key=lambda r: r["synced_at"] or datetime.min.replace(tzinfo=timezone.utc))
@@ -348,7 +348,7 @@ def pull_trx_window(company_id: int, client: ESBClient, entity: str,
     cfg = TRX_INDEX_VIEW[entity]
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    stats = {"pulled": 0, "views": 0, "surrogate": 0, "promoted": 0}
+    stats: typing.Dict[str, typing.Any] = {"pulled": 0, "views": 0, "surrogate": 0, "promoted": 0}
     pending_counts: typing.Dict[tuple, int] = {}
     try:
         cur.execute(
@@ -567,8 +567,10 @@ def backfill_entity(self, company_id: int, entity: str):
                 return f"{code}:{entity} full-scan already done"
             _set_watermark(cur, company_id, entity, "backfill", None, "running")
             conn.commit()
+            start_val = _parse_date(BACKFILL_START)
+            assert start_val is not None and converge_to is not None
             stats = pull_trx_window(company_id, client, entity,
-                                    date_from=_parse_date(BACKFILL_START), date_to=converge_to,
+                                    date_from=start_val, date_to=converge_to,
                                     lane="backfill", skip_if_synced=True)
             if stats.get("status") == "FAILED":
                 _set_watermark(cur, company_id, entity, "backfill", None, "failed")
@@ -583,9 +585,10 @@ def backfill_entity(self, company_id: int, entity: str):
         if wm and wm["watermark_date"]:
             nxt = wm["watermark_date"] + timedelta(days=1)
             start_from = nxt.isoformat()
-        start_date = _parse_date(start_from)
+        start = _parse_date(start_from)
+        assert start is not None and converge_to is not None
 
-        chunks = list(_month_chunks(start_date, converge_to))
+        chunks = list(_month_chunks(start, converge_to))
         if not chunks:
             _set_watermark(cur, company_id, entity, "backfill", converge_to, "done")
             conn.commit()
@@ -612,7 +615,7 @@ def backfill_entity(self, company_id: int, entity: str):
             except Exception:
                 pass
 
-        remaining = list(_month_chunks((m_end + timedelta(days=1)) if processed else start_date, converge_to))
+        remaining = list(_month_chunks((m_end + timedelta(days=1)) if processed else start, converge_to))
         if remaining and _in_night_window():
             try:
                 lock.release()    # hand the company over to the chained task
@@ -1008,6 +1011,7 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
 
         wm = _get_watermark(cur, company_id, entity, "backfill")
         start = _parse_date(BACKFILL_START)
+        assert start is not None and converge_to is not None
         if wm and wm["watermark_date"]:
             start = wm["watermark_date"] + timedelta(days=1)
         else:
