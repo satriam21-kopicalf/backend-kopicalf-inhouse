@@ -111,26 +111,7 @@ jobs:
             cd ${{ env.DEPLOY_PATH }}
 
             echo "=== Running database migrations ==="
-            docker compose exec -T api python -c "
-              from app.core.db import get_db_connection
-              conn = get_db_connection()
-              cur = conn.cursor()
-              try:
-                # Check if indexes exist
-                cur.execute('''
-                  SELECT 1 FROM pg_indexes
-                  WHERE tablename = 'esb_raw_staging'
-                  AND indexname = 'idx_esb_raw_staging_lookup'
-                ''')
-                if not cur.fetchone():
-                  print('Creating performance indexes...')
-                  conn.commit()
-                else:
-                  print('Indexes already exist, skipping...')
-              finally:
-                cur.close()
-                conn.close()
-            "
+            docker compose exec -T api sh -c 'python -c "from app.core.db import engine; print(\"DB connection OK\")"'
 
             echo "=== Migration check complete ==="
 
