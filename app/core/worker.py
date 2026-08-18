@@ -65,10 +65,10 @@ celery_app.conf.beat_schedule = {
         'task': 'app.services.tasks.sync_master_data_router',
         'schedule': crontab(minute='*/5'),
     },
-    # Lane A: nightly backfill dispatch (19:00 WIB, window 19:00-08:00)
+    # Lane A: 24/7 backfill dispatch (every 15 minutes)
     'trx-backfill-router': {
         'task': 'app.services.trx_engine.backfill_router',
-        'schedule': crontab(hour=19, minute=0),
+        'schedule': crontab(minute='*/15'),
     },
     # Direct report LIVE delta: every 30 minutes, all companies in parallel
     # (window T-1..T; deep T-7 refresh stays on the 06:00 beat below)

@@ -187,10 +187,8 @@ def _parse_date(val) -> typing.Optional[date]:
 
 
 def _in_night_window(now_jkt: datetime = None) -> bool:
-    jkt = pytz.timezone("Asia/Jakarta")
-    now = now_jkt or datetime.now(jkt)
-    h = now.hour
-    return h >= BACKFILL_NIGHT_START or h < BACKFILL_NIGHT_END
+    # Changed to 24-hour mode, always allow backfill
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────
