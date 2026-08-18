@@ -9,9 +9,7 @@ services:
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
+      - REDIS_URL=redis://187.52.114.14:6379/0
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
@@ -27,9 +25,7 @@ services:
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
+      - REDIS_URL=redis://187.52.114.14:6379/0
     restart: unless-stopped
 
   # Master-data lane: infrequent master sync (interval configurable via
@@ -40,12 +36,10 @@ services:
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://187.52.114.14:6379/0
       - BACKFILL_WINDOW_START=19
       - BACKFILL_WINDOW_END=8
       - BACKFILL_START_DATE=2024-01-01
-    depends_on:
-      - redis
     restart: unless-stopped
 
   # Daily lane: TRX delta + direct reports (live 30-min delta + deep 06:00) + audit
@@ -55,12 +49,10 @@ services:
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://187.52.114.14:6379/0
       - BACKFILL_WINDOW_START=19
       - BACKFILL_WINDOW_END=8
       - BACKFILL_START_DATE=2024-01-01
-    depends_on:
-      - redis
     restart: unless-stopped
 
   # Lane A: historical backfill, TRX + RPT (night window 19:00-08:00 WIB; parallel across
@@ -72,12 +64,10 @@ services:
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://187.52.114.14:6379/0
       - BACKFILL_WINDOW_START=19
       - BACKFILL_WINDOW_END=8
       - BACKFILL_START_DATE=2024-01-01
-    depends_on:
-      - redis
     restart: unless-stopped
 
   # Report queries + async exports (on-demand, API-facing; parallel XLSX)
@@ -87,19 +77,5 @@ services:
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
+      - REDIS_URL=redis://187.52.114.14:6379/0
     restart: unless-stopped
-
-  redis:
-    image: redis:alpine
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction", "--save", "900 1 60 100"]
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-
-volumes:
-  redis_data:
