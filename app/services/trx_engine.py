@@ -354,7 +354,8 @@ def pull_trx_window(company_id: int, client: ESBClient, entity: str,
         cur.execute(
             "INSERT INTO sync_history (entity_type, status, company_id) VALUES (%s, %s, %s) RETURNING id",
             (f"TRX_{entity}", "STARTED", company_id))
-        history_id = cur.fetchone()["id"]
+        _row = cur.fetchone()
+        history_id = _row["id"] if _row else None
         conn.commit()
 
         _set_watermark(cur, company_id, entity, lane, None, "running")
@@ -776,7 +777,8 @@ def completeness_audit():
                     cur.execute(
                         "SELECT count(*) AS n FROM trx_raw_staging WHERE company_id=%s AND entity_type=%s AND doc_date=%s",
                         (co["id"], entity, bucket))
-                    staging_count = cur.fetchone()["n"]
+                    row = cur.fetchone()
+                    staging_count = row["n"] if row else 0
                     status = "MATCH" if api_count == staging_count else "MISMATCH"
                     cur.execute("""
                         INSERT INTO report_reconciliation_log (company_id, entity_type, bucket_date, api_count, staging_count, status)
@@ -789,7 +791,8 @@ def completeness_audit():
                             cur.execute(
                                 "SELECT count(*) AS n FROM trx_raw_staging WHERE company_id=%s AND entity_type=%s AND doc_date=%s",
                                 (co["id"], entity, bucket))
-                            after = cur.fetchone()["n"]
+                            row = cur.fetchone()
+                            after = row["n"] if row else 0
                             cur.execute("""
                                 INSERT INTO report_reconciliation_log (company_id, entity_type, bucket_date, api_count, staging_count, status, staging_after)
                                 VALUES (%s, %s, %s, %s, %s, 'REPOILED', %s)
@@ -924,7 +927,8 @@ def sync_direct_reports_company(company_id: int, window_days: typing.Optional[in
             cur.execute(
                 "INSERT INTO sync_history (entity_type, status, company_id) VALUES (%s, %s, %s) RETURNING id",
                 (entity, "STARTED", co["id"]))
-            history_id = cur.fetchone()["id"]
+            _row = cur.fetchone()
+            history_id = _row["id"] if _row else None
             conn.commit()
             pulled, has_error, err = 0, False, ""
             back_days = cfg["window_days"] if window_days is None else window_days
