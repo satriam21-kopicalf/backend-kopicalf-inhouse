@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   api:
-    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
+    image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8005
     ports:
       - "8005:8005"
@@ -22,7 +22,7 @@ services:
 
   # Beat scheduler only (single instance; dispatches routed tasks to queues)
   celery_beat:
-    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
+    image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
     command: celery -A app.core.worker beat --loglevel=info
     env_file:
       - .env
@@ -35,7 +35,7 @@ services:
   # Master-data lane: infrequent master sync (interval configurable via
   # engine_settings; dispatched by the 5-min router)
   worker_master:
-    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
+    image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
     command: celery -A app.core.worker worker -Q queue_master --concurrency=4 --loglevel=info
     env_file:
       - .env
@@ -50,7 +50,7 @@ services:
 
   # Daily lane: TRX delta + direct reports (live 30-min delta + deep 06:00) + audit
   worker_trx_daily:
-    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
+    image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
     command: celery -A app.core.worker worker -Q queue_sync --concurrency=4 --loglevel=info
     env_file:
       - .env
@@ -67,7 +67,7 @@ services:
   # companies via bf_company_{id} Redis locks - one task per company at a time;
   # dispatch order is CALF-first round-robin)
   worker_backfill:
-    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
+    image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
     command: celery -A app.core.worker worker -Q queue_backfill --concurrency=6 --loglevel=info
     env_file:
       - .env
@@ -82,7 +82,7 @@ services:
 
   # Report queries + async exports (on-demand, API-facing; parallel XLSX)
   worker_report:
-    image: ${DOCKER_IMAGE:-satriam21/calf-backend}:${IMAGE_TAG:-latest}
+    image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
     command: celery -A app.core.worker worker -Q queue_report,queue_export --concurrency=4 --loglevel=info
     env_file:
       - .env
