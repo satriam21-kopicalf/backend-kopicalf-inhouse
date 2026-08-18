@@ -176,65 +176,43 @@ async def master_summary():
 @app.get("/api/v1/reports/summary")
 async def reports_summary():
     """Per-report staging stats: row counts, period coverage, and last sync —
-    powers the LIVE badges on the Reporting menu. Optimized with batch queries."""
+    powers the LIVE badges on the Reporting menu."""
     from app.core.db import get_db_connection
     from app.services.reports import REPORTS
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        # Batch query for all trx entities
-        trx_entities = [spec["entity"] for slug, spec in REPORTS.items() if spec["source"] == "trx"]
-        rpt_entities = [spec["entity"] for slug, spec in REPORTS.items() if spec["source"] == "rpt"]
-
-        # Single query for all trx counts
-        trx_sql = """
-            SELECT entity_type,
-                   count(*) AS rows,
-                   min(doc_date) AS earliest, max(doc_date) AS latest,
-                   max(synced_at) AS last_sync,
-                   count(DISTINCT company_id) AS companies
-            FROM trx_raw_staging
-            WHERE entity_type = ANY(%s)
-            GROUP BY entity_type
-        """
-        cur.execute(trx_sql, (trx_entities,))
-        trx_stats = {row["entity_type"]: row for row in cur.fetchall()}
-
-        # Single query for all rpt counts
-        if rpt_entities:
-            rpt_sql = """
-                SELECT report_type,
-                       count(*) AS rows,
-                       coalesce(sum(json_array_length(raw_data::json->'lines')), 0) AS lines,
-                       min(period_start) AS earliest, max(period_start) AS latest,
-                       max(fetched_at) AS last_sync,
-                       count(DISTINCT company_id) AS companies
-                FROM report_raw_staging
-                WHERE report_type = ANY(%s)
-                GROUP BY report_type
-            """
-            cur.execute(rpt_sql, (rpt_entities,))
-            rpt_stats = {row["report_type"]: row for row in cur.fetchall()}
-        else:
-            rpt_stats = {}
-
         out = []
         for slug, spec in REPORTS.items():
-            entity = spec["entity"]
             if spec["source"] == "rpt":
-                r = rpt_stats.get(entity, {})
-                row_count = r.get("lines", 0) or r.get("rows", 0) or 0
+                cur.execute("""
+                    SELECT count(*) AS rows,
+                           coalesce(sum(json_array_length(raw_data::json->'lines')), 0) AS lines,
+                           min(period_start) AS earliest, max(period_start) AS latest,
+                           max(fetched_at) AS last_sync,
+                           count(DISTINCT company_id) AS companies
+                    FROM report_raw_staging WHERE report_type = %s
+                """, (spec["entity"],))
+                r = cur.fetchone()
+                row_count = r["lines"] or r["rows"] or 0
             else:
-                r = trx_stats.get(entity, {})
-                row_count = r.get("rows", 0) or 0
+                cur.execute("""
+                    SELECT count(*) AS rows, NULL::bigint AS lines,
+                           min(doc_date) AS earliest, max(doc_date) AS latest,
+                           max(synced_at) AS last_sync,
+                           count(DISTINCT company_id) AS companies
+                    FROM trx_raw_staging WHERE entity_type = %s
+                """, (spec["entity"],))
+                r = cur.fetchone()
+                row_count = r["rows"] or 0
             out.append({
                 "slug": slug, "title": spec["title"], "source": spec["source"],
                 "row_count": row_count,
-                "staging_rows": r.get("rows", 0) or 0,
-                "companies": r.get("companies", 0) or 0,
-                "period_from": r.get("earliest"), "period_to": r.get("latest"),
-                "last_sync": r.get("last_sync"),
-                "live": (r.get("rows", 0) or 0) > 0,
+                "staging_rows": r["rows"] or 0,
+                "companies": r["companies"] or 0,
+                "period_from": r["earliest"], "period_to": r["latest"],
+                "last_sync": r["last_sync"],
+                "live": (r["rows"] or 0) > 0,
             })
         return {"reports": out}
     finally:
