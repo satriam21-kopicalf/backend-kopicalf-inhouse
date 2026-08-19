@@ -218,27 +218,28 @@ def _fetch_company_report_data(company_id: int, company_code: str, entity_type: 
             SELECT payload, doc_date, status, synced_at
             FROM trx_raw_staging
             WHERE company_id = %s AND entity_type = %s
-              AND doc_date BETWEEN %s AND %s
+              AND doc_date >= %s AND doc_date < %s
             ORDER BY doc_date DESC
             LIMIT %s
-        """, (company_id, entity_type, date_from, date_to, limit))
+        """, (company_id, entity_type, date_from, date_to + timedelta(days=1), limit))
 
-        for row in cur.fetchall():
-            payload = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        for row in (dict(r) for r in cur.fetchall()):
+            payload = row["payload"] if isinstance(row["payload"], dict) else json.loads(row["payload"])
             result["rows"].append({
                 "payload": payload,
-                "doc_date": str(row[1]) if row[1] else None,
-                "status": row[2],
-                "synced_at": row[3].isoformat() if row[3] else None,
+                "doc_date": str(row["doc_date"]) if row.get("doc_date") else None,
+                "status": row["status"],
+                "synced_at": row["synced_at"].isoformat() if row.get("synced_at") else None,
             })
 
         # Get total count
         cur.execute("""
-            SELECT count(*) FROM trx_raw_staging
+            SELECT count(*) as cnt FROM trx_raw_staging
             WHERE company_id = %s AND entity_type = %s
-              AND doc_date BETWEEN %s AND %s
-        """, (company_id, entity_type, date_from, date_to))
-        result["count"] = cur.fetchone()[0]
+              AND doc_date >= %s AND doc_date < %s
+        """, (company_id, entity_type, date_from, date_to + timedelta(days=1)))
+        row = cur.fetchone()
+        result["count"] = (row or (0,))[0]
 
         return result
     finally:
@@ -265,12 +266,12 @@ def _fetch_company_direct_report(company_id: int, company_code: str, report_type
             SELECT raw_data, period_start, period_end, fetched_at
             FROM report_raw_staging
             WHERE company_id = %s AND report_type = %s
-              AND period_start BETWEEN %s AND %s
+              AND period_start >= %s AND period_start < %s
             ORDER BY period_start DESC
-        """, (company_id, report_type, date_from, date_to))
+        """, (company_id, report_type, date_from, date_to + timedelta(days=1)))
 
-        for row in cur.fetchall():
-            raw_data = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        for row in (dict(r) for r in cur.fetchall()):
+            raw_data = row["raw_data"] if isinstance(row["raw_data"], dict) else json.loads(row["raw_data"])
             lines = raw_data.get("lines", []) if isinstance(raw_data, dict) else []
             result["rows"].extend(lines)
             result["count"] += len(lines)
@@ -317,7 +318,7 @@ def fetch_all_companies_master_summary(use_cache: bool = True) -> dict:
             ORDER BY id
         """)
         companies = [(row["id"], row["esb_company_code"], row["company_name"])
-                     for row in cur.fetchall()]
+                     for row in (dict(r) for r in cur.fetchall())]
 
         if not companies:
             return {"companies": [], "total": 0, "fetched_at": datetime.now(timezone.utc).isoformat()}
@@ -396,7 +397,7 @@ def fetch_all_companies_trx_summary(use_cache: bool = True) -> dict:
             ORDER BY id
         """)
         companies = [(row["id"], row["esb_company_code"], row["company_name"])
-                     for row in cur.fetchall()]
+                     for row in (dict(r) for r in cur.fetchall())]
 
         if not companies:
             return {"companies": [], "total": 0}
@@ -491,7 +492,7 @@ def fetch_all_companies_report(slug: str, entity_type: str, date_from: date,
             ORDER BY id
         """)
         companies = [(row["id"], row["esb_company_code"], row["company_name"])
-                     for row in cur.fetchall()]
+                     for row in (dict(r) for r in cur.fetchall())]
 
         if not companies:
             return {"companies": [], "total_count": 0}
@@ -568,7 +569,7 @@ def fetch_all_companies_direct_report(report_type: str, date_from: date,
             ORDER BY id
         """)
         companies = [(row["id"], row["esb_company_code"], row["company_name"])
-                     for row in cur.fetchall()]
+                     for row in (dict(r) for r in cur.fetchall())]
 
         if not companies:
             return {"companies": [], "total_count": 0}
@@ -640,21 +641,21 @@ def get_integration_hub_summary() -> dict:
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        result = {
+        result: dict[str, typing.Any] = {
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "from_cache": False,
         }
 
         # 1. Active companies count
         cur.execute("SELECT count(*) FROM company_configs WHERE is_active = true")
-        result["active_companies"] = cur.fetchone()[0]
+        result["active_companies"] = (cur.fetchone() or (0,))[0]
 
         # 2. Master data totals (all companies combined)
         master_totals = {}
         for entity, table in MASTER_ENTITY_TABLES.items():
             try:
                 cur.execute(f'SELECT count(*) FROM "{table}"')
-                master_totals[entity] = cur.fetchone()[0]
+                master_totals[entity] = (cur.fetchone() or (0,))[0]
             except Exception:
                 master_totals[entity] = 0
         result["master_data"] = master_totals
@@ -669,12 +670,12 @@ def get_integration_hub_summary() -> dict:
             GROUP BY entity_type
         """)
         trx_totals = {}
-        for row in cur.fetchall():
-            trx_totals[row[0]] = {
-                "count": row[1],
-                "earliest": str(row[2]) if row[2] else None,
-                "latest": str(row[3]) if row[3] else None,
-                "companies": row[4],
+        for row in (dict(r) for r in cur.fetchall()):
+            trx_totals[row["entity_type"]] = {
+                "count": row["count"],
+                "earliest": str(row["earliest"]) if row.get("earliest") else None,
+                "latest": str(row["latest"]) if row.get("latest") else None,
+                "companies": row["companies"],
             }
         result["trx_staging"] = trx_totals
         result["trx_total_records"] = sum(d["count"] for d in trx_totals.values())
@@ -690,12 +691,12 @@ def get_integration_hub_summary() -> dict:
             GROUP BY report_type
         """)
         report_totals = {}
-        for row in cur.fetchall():
-            report_totals[row[0]] = {
-                "lines": row[1],
-                "companies": row[2],
-                "earliest": str(row[3]) if row[3] else None,
-                "latest": str(row[4]) if row[4] else None,
+        for row in (dict(r) for r in cur.fetchall()):
+            report_totals[row["report_type"]] = {
+                "lines": row["lines"],
+                "companies": row["companies"],
+                "earliest": str(row["earliest"]) if row.get("earliest") else None,
+                "latest": str(row["latest"]) if row.get("latest") else None,
             }
         result["direct_reports"] = report_totals
         result["direct_reports_total"] = sum(d["lines"] for d in report_totals.values())
@@ -708,10 +709,10 @@ def get_integration_hub_summary() -> dict:
             GROUP BY entity_type, status
         """)
         sync_status = {}
-        for row in cur.fetchall():
-            sync_status.setdefault(row[0], {})[row[1]] = {
-                "count": row[2],
-                "last_run": row[3].isoformat() if row[3] else None,
+        for row in (dict(r) for r in cur.fetchall()):
+            sync_status.setdefault(row["entity_type"], {})[row["status"]] = {
+                "count": row["n"],
+                "last_run": row["last_run"].isoformat() if row.get("last_run") else None,
             }
         result["sync_status_24h"] = sync_status
 
@@ -730,15 +731,15 @@ def get_integration_hub_summary() -> dict:
         """)
         result["companies"] = [
             {
-                "id": row[0],
-                "code": row[1],
-                "name": row[2],
-                "branches": row[3],
-                "products": row[4],
-                "trx_records": row[5],
-                "report_lines": row[6],
+                "id": row["id"],
+                "code": row["esb_company_code"],
+                "name": row["company_name"],
+                "branches": row["branches"],
+                "products": row["products"],
+                "trx_records": row["trx_records"],
+                "report_lines": row["report_lines"],
             }
-            for row in cur.fetchall()
+            for row in (dict(r) for r in cur.fetchall())
         ]
 
         _set_cached(cache_key, result, CACHE_TTL_SECONDS)
