@@ -41,7 +41,7 @@ from app.services.tasks import (
 ESB_API_BASE_URL = os.getenv("ESB_CORE_URL", "https://services.esb.co.id/core")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-BACKFILL_START = os.getenv("BACKFILL_START_DATE", "2024-01-01")   # awal penggunaan ESB
+BACKFILL_START = os.getenv("BACKFILL_START_DATE", "2025-06-01")   # Historical data start: 2025-06-01
 BACKFILL_NIGHT_START = int(os.getenv("BACKFILL_WINDOW_START", "19"))   # WIB
 BACKFILL_NIGHT_END = int(os.getenv("BACKFILL_WINDOW_END", "8"))        # WIB
 DELTA_WINDOW_DAYS = 2       # T-2 -> T
@@ -889,6 +889,19 @@ RPT_DIRECT: typing.Dict[str, dict] = {
         "path": "/report/sales-payment-summary",
         "params_for": lambda d: {"salesDate": d.isoformat()},
         "window_days": 2,   # yesterday + today
+    },
+    # ── Priority Reports (Sprint 4) ──────────────────────────────────────────
+    # Sales Recapitulation Detail Report - Detail penjualan per produk/cabang
+    "RPT_SALES_RECAPITULATION_DETAIL": {
+        "path": "/report/sales-recapitulation-detail",
+        "params_for": lambda d: {"salesDate": d.isoformat()},
+        "window_days": 2,   # yesterday + today (T-2 -> T)
+    },
+    # Goods Receipt Recapitulation Report - Rekapitulasi penerimaan barang
+    "RPT_GOODS_RECEIPT_RECAPITULATION": {
+        "path": "/report/goods-receipt-recapitulation",
+        "params_for": lambda d: {"goodsReceiptDate": d.isoformat()},
+        "window_days": 2,   # yesterday + today (T-2 -> T)
     },
 }
 

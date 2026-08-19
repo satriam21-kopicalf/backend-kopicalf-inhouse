@@ -39,7 +39,7 @@ services:
       - REDIS_URL=redis://187.52.114.14:6379/0
       - BACKFILL_WINDOW_START=19
       - BACKFILL_WINDOW_END=8
-      - BACKFILL_START_DATE=2024-01-01
+      - BACKFILL_START_DATE=2025-06-01
     restart: unless-stopped
 
   # Daily lane: TRX delta + direct reports (live 30-min delta + deep 06:00) + audit
@@ -52,7 +52,7 @@ services:
       - REDIS_URL=redis://187.52.114.14:6379/0
       - BACKFILL_WINDOW_START=19
       - BACKFILL_WINDOW_END=8
-      - BACKFILL_START_DATE=2024-01-01
+      - BACKFILL_START_DATE=2025-06-01
     restart: unless-stopped
 
   # Lane A: historical backfill, TRX + RPT (night window 19:00-08:00 WIB; parallel across
@@ -67,7 +67,7 @@ services:
       - REDIS_URL=redis://187.52.114.14:6379/0
       - BACKFILL_WINDOW_START=19
       - BACKFILL_WINDOW_END=8
-      - BACKFILL_START_DATE=2024-01-01
+      - BACKFILL_START_DATE=2025-06-01
     restart: unless-stopped
 
   # Report queries + async exports (on-demand, API-facing; parallel XLSX)
