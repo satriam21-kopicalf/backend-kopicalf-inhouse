@@ -429,17 +429,210 @@ async def update_engine_settings(settings: dict):
     cur = conn.cursor()
     try:
         cur.execute("""
-            UPDATE engine_settings 
-            SET sync_batch_size = %s, 
-                work_hours_interval_minutes = %s, 
+            UPDATE engine_settings
+            SET sync_batch_size = %s,
+                work_hours_interval_minutes = %s,
                 morning_window_interval_minutes = %s,
                 updated_at = NOW()
             WHERE id = 1
-        """, (settings.get('sync_batch_size', 1000), 
-              settings.get('work_hours_interval_minutes', 30), 
+        """, (settings.get('sync_batch_size', 1000),
+              settings.get('work_hours_interval_minutes', 30),
               settings.get('morning_window_interval_minutes', 30)))
         conn.commit()
         return {"status": "success", "message": "Engine settings updated"}
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PARALLEL FETCHING ENDPOINTS (Optimized for All Companies queries)
+# ══════════════════════════════════════════════════════════════════════════════
+# These endpoints replace sequential per-company API calls with parallel
+# concurrent execution, reducing latency from 8x to ~1x for All Companies views.
+
+@app.get("/api/v1/parallel/master/summary")
+async def parallel_master_summary(force_refresh: bool = False):
+    """Fetch master data summary for ALL active companies in a SINGLE call.
+
+    This is an optimized replacement for iterating through each company
+    with /api/v1/master/summary. Uses parallel database queries and caching.
+
+    Args:
+        force_refresh: Bypass cache if True
+
+    Returns:
+        {
+            "companies": [{company_id, company_code, company_name, entities: {...}}],
+            "totals": {entity: total_count},
+            "total_companies": 8,
+            "total_records": 123456,
+            "from_cache": false
+        }
+    """
+    from app.services.aggregation import fetch_all_companies_master_summary
+    return fetch_all_companies_master_summary(use_cache=not force_refresh)
+
+
+@app.get("/api/v1/parallel/trx/summary")
+async def parallel_trx_summary(force_refresh: bool = False):
+    """Fetch TRX staging summary for ALL active companies in a SINGLE call.
+
+    Returns per-company and aggregated TRX entity counts with latest sync times.
+
+    Returns:
+        {
+            "companies": [{company_id, company_code, company_name, entities: {...}}],
+            "totals": {entity: {count, companies_with_data}},
+            "total_companies": 8
+        }
+    """
+    from app.services.aggregation import fetch_all_companies_trx_summary
+    return fetch_all_companies_trx_summary(use_cache=not force_refresh)
+
+
+@app.get("/api/v1/parallel/reports/{slug}")
+async def parallel_report(slug: str, date_from: str, date_to: str,
+                         limit: int = 200, use_cache: bool = False):
+    """Fetch report data for ALL active companies in a SINGLE call.
+
+    This is the KEY optimization: instead of 8 separate /api/v1/reports/{slug}
+    calls (one per company), this returns all companies in ONE parallel query.
+
+    Args:
+        slug: Report slug (e.g., "stock-opname-report")
+        date_from: Start date (YYYY-MM-DD)
+        date_to: End date (YYYY-MM-DD)
+        limit: Max rows per company (default 200)
+        use_cache: Enable caching for this query (default False)
+
+    Returns:
+        {
+            "slug": "stock-opname-report",
+            "companies": [{
+                "company_id": 1,
+                "company_code": "CALF",
+                "company_name": "PT Yuda Prawira...",
+                "rows": [...],
+                "count": 150
+            }],
+            "total_count": 1200,
+            "limit_per_company": 200
+        }
+    """
+    from datetime import date
+    from app.services.aggregation import fetch_all_companies_report
+    from app.services.reports import REPORTS
+
+    if slug not in REPORTS:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Report not found: {slug}")
+
+    spec = REPORTS[slug]
+    return fetch_all_companies_report(
+        slug=slug,
+        entity_type=spec["entity"],
+        date_from=date.fromisoformat(date_from),
+        date_to=date.fromisoformat(date_to),
+        limit=min(limit, 1000),
+        use_cache=use_cache
+    )
+
+
+@app.get("/api/v1/parallel/direct-reports/{report_type}")
+async def parallel_direct_report(report_type: str, date_from: str, date_to: str,
+                                use_cache: bool = False):
+    """Fetch direct report (T2) for ALL active companies in a SINGLE call.
+
+    Args:
+        report_type: Report type (e.g., "RPT_STOCK_MOVEMENT")
+        date_from: Start date (YYYY-MM-DD)
+        date_to: End date (YYYY-MM-DD)
+        use_cache: Enable caching (default False)
+
+    Returns:
+        {
+            "report_type": "RPT_STOCK_MOVEMENT",
+            "companies": [...],
+            "total_count": 5000
+        }
+    """
+    from datetime import date
+    from app.services.aggregation import fetch_all_companies_direct_report
+
+    return fetch_all_companies_direct_report(
+        report_type=report_type,
+        date_from=date.fromisoformat(date_from),
+        date_to=date.fromisoformat(date_to),
+        use_cache=use_cache
+    )
+
+
+@app.get("/api/v1/parallel/integration-hub")
+async def parallel_integration_hub(force_refresh: bool = False):
+    """Get complete Integration Hub dashboard data in a SINGLE optimized call.
+
+    This endpoint aggregates ALL the key metrics needed for the dashboard:
+    - Master data totals across all companies
+    - TRX staging totals
+    - Direct reports totals
+    - Per-company summary
+    - Recent sync status
+
+    This replaces multiple separate API calls with one efficient query.
+
+    Returns:
+        {
+            "active_companies": 8,
+            "master_data": {entity: count},
+            "master_data_total": 123456,
+            "trx_staging": {entity: {count, earliest, latest, companies}},
+            "trx_total_records": 50000,
+            "direct_reports": {type: {lines, companies, ...}},
+            "direct_reports_total": 10000,
+            "sync_status_24h": {...},
+            "companies": [{id, code, name, branches, products, trx_records, report_lines}],
+            "from_cache": false
+        }
+    """
+    from app.services.aggregation import get_integration_hub_summary
+    return get_integration_hub_summary()
+
+
+@app.post("/api/v1/parallel/cache/invalidate")
+async def invalidate_parallel_cache():
+    """Invalidate all parallel fetching cache entries.
+
+    Call this after triggering manual syncs to ensure fresh data.
+    """
+    from app.services.aggregation import invalidate_all_parallel_cache
+    invalidate_all_parallel_cache()
+    return {"status": "success", "message": "Cache invalidated"}
+
+
+@app.get("/api/v1/parallel/companies")
+async def parallel_companies():
+    """Get all active companies' metadata for parallel data fetching.
+
+    Returns:
+        {
+            "companies": [{id, esb_company_code, company_name, esb_username}]
+        }
+    """
+    from app.core.db import get_db_connection
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id, esb_company_code, company_name
+            FROM company_configs
+            WHERE is_active = true AND esb_company_code IS NOT NULL
+            ORDER BY id
+        """)
+        return {
+            "companies": [dict(r) for r in cur.fetchall()],
+            "count": cur.rowcount
+        }
     finally:
         cur.close()
         conn.close()
