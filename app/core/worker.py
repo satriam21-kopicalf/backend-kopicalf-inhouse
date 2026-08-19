@@ -31,18 +31,19 @@ celery_app.conf.update(
     task_acks_late=True,
 )
 
-# ── Specialized worker topology (Sprint 3: worker split) ─────────────────
+# ── Specialized worker topology ──────────────────────────────────────────────
 # queue_master   : master-data sync lane (infrequent, configurable interval)
-# queue_sync     : TRX delta lane + direct reports + completeness audit (daily)
-# queue_backfill : Lane A historical backfill, TRX + RPT (night window)
-# queue_report   : on-demand report queries (Sprint 3 consumer)
-# queue_export   : async XLSX/PDF exports (Sprint 3 consumer)
+# queue_sync     : TRX delta lane + realtime + direct reports + completeness audit
+# queue_backfill : Lane A historical backfill, TRX + RPT (24/7 every 25 min)
+# queue_report   : on-demand report queries
+# queue_export   : async XLSX/PDF exports
 celery_app.conf.task_routes = {
     'app.services.tasks.sync_master_data_router': {'queue': 'queue_master'},
     'app.services.tasks.sync_master_data': {'queue': 'queue_master'},
     'app.services.tasks.sync_all_companies': {'queue': 'queue_master'},
     'app.services.tasks.sync_company_data': {'queue': 'queue_master'},
     'app.services.trx_engine.delta_sync_trx': {'queue': 'queue_sync'},
+    'app.services.trx_engine.realtime_sync_trx': {'queue': 'queue_sync'},
     'app.services.trx_engine.completeness_audit': {'queue': 'queue_sync'},
     'app.services.trx_engine.sync_direct_reports': {'queue': 'queue_sync'},
     'app.services.trx_engine.sync_direct_reports_delta': {'queue': 'queue_sync'},
@@ -65,10 +66,15 @@ celery_app.conf.beat_schedule = {
         'task': 'app.services.tasks.sync_master_data_router',
         'schedule': crontab(minute='*/5'),
     },
-    # Lane A: 24/7 backfill dispatch (every 15 minutes)
+    # Lane C: Real-time sync (T-0 current day, every 5 minutes)
+    'trx-realtime-sync': {
+        'task': 'app.services.trx_engine.realtime_sync_trx',
+        'schedule': crontab(minute='*/5'),
+    },
+    # Lane A: Historical backfill dispatch (every 25 minutes, 24/7)
     'trx-backfill-router': {
         'task': 'app.services.trx_engine.backfill_router',
-        'schedule': crontab(minute='*/15'),
+        'schedule': crontab(minute='*/25'),
     },
     # Direct report LIVE delta: every 30 minutes, all companies in parallel
     # (window T-1..T; deep T-7 refresh stays on the 06:00 beat below)

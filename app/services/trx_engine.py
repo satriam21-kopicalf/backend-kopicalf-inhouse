@@ -1,7 +1,9 @@
-"""Dual-lane transactional ingest engine (Sprint 1).
+"""Dual-lane transactional ingest engine.
 
-Lane A (backfill): monthly chunks oldest-first from 2025-06-01, night window only.
-Lane B (delta):    rolling window T-2 -> T daily, driven by md_sync_schedules.
+Lane A (Historical): continuous monthly chunks oldest-first from BACKFILL_START,
+    runs every 25 minutes, 24/7.
+Lane B (Daily Process): rolling window T-2 -> T daily, driven by md_sync_schedules.
+Real-time lane: T-1 -> T for current day data, runs every 30 minutes.
 
 Both lanes upsert into trx_raw_staging keyed (company_id, entity_type, doc_num)
 which makes overlaps structurally impossible to duplicate; the daily
@@ -186,8 +188,8 @@ def _parse_date(val) -> typing.Optional[date]:
         return None
 
 
-def _in_night_window(now_jkt: typing.Optional[datetime] = None) -> bool:
-    # Changed to 24-hour mode, always allow backfill
+def _is_backfill_allowed(now_jkt: typing.Optional[datetime] = None) -> bool:
+    # Lane A runs 24/7, no time restriction
     return True
 
 
@@ -520,13 +522,76 @@ def delta_sync_trx(self):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Lane A: backfill (monthly chunks, night window, checkpoint resume)
+# Lane A: Historical (monthly chunks, 24/7 every 25 min, checkpoint resume)
+# Lane C: Real-time (T-0 current day, every 5 minutes)
 # ─────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────
+# Lane C: Real-time sync (T-0, every 5 minutes)
+# ─────────────────────────────────────────────────────────────────────────
+
+@celery_app.task(bind=True, name="app.services.trx_engine.realtime_sync_trx")
+def realtime_sync_trx(self):
+    """Real-time sync for all companies: pulls T-0 (current day) data every 5 minutes.
+    This ensures today's transactions are available immediately without waiting for
+    the daily delta or historical backfill lanes."""
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        if not _is_engine_enabled(cur):
+            return "Engine disabled; realtime skipped"
+        _stale_running_cleanup(cur)
+        conn.commit()
+
+        cur.execute("""
+            SELECT id, esb_company_code, esb_username, esb_password
+            FROM company_configs WHERE is_active = true AND esb_company_code IS NOT NULL
+        """)
+        companies = cur.fetchall()
+
+        today = date.today()
+        results = {}
+        for co in companies:
+            if not _is_engine_enabled(cur):
+                break
+            code = co["esb_company_code"]
+            username = co["esb_username"] or ESB_FALLBACK_USERNAME
+            password = co["esb_password"] or ESB_FALLBACK_PASSWORD
+            if not (username and password):
+                continue
+            try:
+                token = _auth_locked_company_token(code, username, password)
+                client = ESBClient(token, code, username, password)
+            except Exception as auth_err:
+                cur.execute(
+                    "INSERT INTO sync_history (entity_type, status, company_id, error_message, completed_at) VALUES (%s,%s,%s,%s,%s)",
+                    ("TRX_REALTIME_AUTH", "FAILED", co["id"], str(auth_err), datetime.now(timezone.utc)))
+                conn.commit()
+                continue
+            # Pull all TRX entities for today only
+            for entity in TRX_INDEX_VIEW:
+                try:
+                    cfg = TRX_INDEX_VIEW[entity]
+                    # For entities without server-side date filter, pull full index
+                    # For others, pull only today's date range
+                    if cfg["date_filter"] is None:
+                        stats = pull_trx_window(co["id"], client, entity, today, today,
+                                                lane="realtime", skip_if_synced=True)
+                    else:
+                        stats = pull_trx_window(co["id"], client, entity, today, today, lane="realtime")
+                    results[f"{code}:{entity}"] = stats.get("pulled", 0)
+                except Exception as e:
+                    results[f"{code}:{entity}"] = f"ERROR: {e}"
+        return results
+    finally:
+        cur.close()
+        conn.close()
+
 
 @celery_app.task(bind=True, name="app.services.trx_engine.backfill_entity")
 def backfill_entity(self, company_id: int, entity: str):
     """Process up to MAX_MONTHS_PER_RUN months for one (company, entity), then
-    re-enqueue itself while work remains and the night window is open."""
+    re-enqueue itself while work remains. Lane A runs continuously 24/7."""
     if entity not in TRX_INDEX_VIEW:
         return f"Unknown entity {entity}"
     conn = get_db_connection()
@@ -534,7 +599,7 @@ def backfill_entity(self, company_id: int, entity: str):
     try:
         if not _is_engine_enabled(cur):
             return "Engine disabled; backfill paused"
-        if not _in_night_window():
+        if not _is_backfill_allowed():
             return "Outside night window; backfill will resume via router"
 
         cur.execute("SELECT esb_company_code, esb_username, esb_password FROM company_configs WHERE id = %s",
@@ -597,7 +662,7 @@ def backfill_entity(self, company_id: int, entity: str):
 
         processed = 0
         for (m_start, m_end) in chunks:
-            if processed >= MAX_MONTHS_PER_RUN or not _in_night_window():
+            if processed >= MAX_MONTHS_PER_RUN or not _is_backfill_allowed():
                 break
             if not _is_engine_enabled(cur):
                 _set_watermark(cur, company_id, entity, "backfill", None, "paused")
@@ -617,7 +682,7 @@ def backfill_entity(self, company_id: int, entity: str):
                 pass
 
         remaining = list(_month_chunks((m_end + timedelta(days=1)) if processed else start, converge_to))
-        if remaining and _in_night_window():
+        if remaining and _is_backfill_allowed():
             try:
                 lock.release()    # hand the company over to the chained task
             except Exception:
@@ -641,7 +706,8 @@ def backfill_entity(self, company_id: int, entity: str):
 
 @celery_app.task(name="app.services.trx_engine.backfill_router")
 def backfill_router():
-    """Nightly 22:00 WIB: enqueue backfill for every company x entity not yet converged."""
+    """Lane A router: dispatches historical backfill every 25 minutes for every
+    company x entity not yet converged."""
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
@@ -979,11 +1045,11 @@ RPT_BACKFILL_CHUNK_DAYS = 15   # days per task invocation (fairness)
 
 @celery_app.task(name="app.services.trx_engine.rpt_backfill_entity")
 def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
-    """Nightly historical backfill of a direct report into report_raw_staging.
+    """Historical backfill of a direct report into report_raw_staging.
 
     Walks day-by-day from the checkpoint (or BACKFILL_START / the earliest
     already-stored period) forward to T-{window_days}, RPT_BACKFILL_CHUNK_DAYS
-    per invocation, then re-enqueues itself while the night window is open.
+    per invocation, then re-enqueues itself. Lane A runs continuously 24/7.
     Uses the same per-company Redis lock as TRX backfill."""
     cfg = RPT_DIRECT.get(entity)
     if not cfg:
@@ -994,7 +1060,7 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
     try:
         if not _is_engine_enabled(cur):
             return "Engine disabled; RPT backfill paused"
-        if not _in_night_window():
+        if not _is_backfill_allowed():
             return "Outside night window; RPT backfill will resume via router"
         cur.execute("SELECT esb_company_code, esb_username, esb_password FROM company_configs WHERE id = %s",
                     (company_id,))
@@ -1040,7 +1106,7 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
         _set_watermark(cur, company_id, entity, "backfill", None, "running")
         conn.commit()
         d = start
-        while d <= end and _in_night_window():
+        while d <= end and _is_backfill_allowed():
             try:
                 rows = list(_iter_rpt_rows(client, cfg, d))
             except Exception as e:
@@ -1075,7 +1141,7 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
         _set_watermark(cur, company_id, entity, "backfill", end, "running")
         conn.commit()
 
-        if end < converge_to and _in_night_window():
+        if end < converge_to and _is_backfill_allowed():
             try:
                 lock.release()
             except Exception:
