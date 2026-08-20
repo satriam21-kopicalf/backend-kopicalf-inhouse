@@ -1056,14 +1056,14 @@ RPT_DIRECT: typing.Dict[str, dict] = {
     # ── Priority Reports (Sprint 4) ──────────────────────────────────────────
     # Sales Recapitulation Detail Report - Detail penjualan per produk/cabang
     "RPT_SALES_RECAPITULATION_DETAIL": {
-        "path": "/report/sales-recapitulation-detail",
-        "params_for": lambda d: {"salesDate": d.isoformat()},
+        "path": "/sales/product-sales",
+        "params_for": lambda d: {"dateFrom": d.isoformat(), "dateTo": d.isoformat()},
         "window_days": 2,   # yesterday + today (T-2 -> T)
     },
     # Goods Receipt Recapitulation Report - Rekapitulasi penerimaan barang
     "RPT_GOODS_RECEIPT_RECAPITULATION": {
         "path": "/report/goods-receipt-recapitulation",
-        "params_for": lambda d: {"goodsReceiptDate": d.isoformat()},
+        "params_for": lambda d: {"dateFrom": d.isoformat(), "dateTo": d.isoformat()},
         "window_days": 2,   # yesterday + today (T-2 -> T)
     },
 }
