@@ -431,6 +431,9 @@ def _iter_index_rows(client: ESBClient, cfg: dict, date_from: date, date_to: dat
         body = client.get(cfg["index_path"], params=params)
         rows, total_pages = _extract_page(body, "envelope")
         for row in rows:
+            if cfg["index_path"] == "/sales/product-sales" and page == 1:
+                import logging
+                logging.error(f"DEBUG PRODUCT_SALES ROW: {row}")
             row_date = _parse_date(row.get(cfg["doc_date_field"]))
             if row_date and date_from <= row_date <= date_to:
                 yield row
@@ -747,8 +750,13 @@ def backfill_entity(self, company_id: int, entity: str):
     re-enqueue itself while work remains. Lane A runs continuously 24/7."""
     if entity not in TRX_INDEX_VIEW:
         return f"Unknown entity {entity}"
-    if entity not in ("GOODS_RECEIPT", "PRODUCT_SALES", "SALES_PAYMENT", "PRODUCT_SALES_ACTUATION"):
-        return f"Temporarily paused non-priority entity {entity}"
+    priority_entities = (
+        "GOODS_RECEIPT", "PRODUCT_SALES", "SALES_PAYMENT", "PRODUCT_SALES_ACTUATION",
+        "RPT_SALES_RECAPITULATION_DETAIL", "RPT_GOODS_RECEIPT_RECAPITULATION",
+        "RPT_SALES_PAYMENT_SUMMARY"
+    )
+    if entity not in priority_entities:
+        return f"Temporarily paused non-priority TRX entity {entity}"
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
@@ -1222,7 +1230,12 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
     cfg = RPT_DIRECT.get(entity)
     if not cfg:
         return f"Unknown RPT entity {entity}"
-    if entity not in ("GOODS_RECEIPT", "PRODUCT_SALES", "SALES_PAYMENT", "PRODUCT_SALES_ACTUATION"):
+    priority_entities = (
+        "GOODS_RECEIPT", "PRODUCT_SALES", "SALES_PAYMENT", "PRODUCT_SALES_ACTUATION",
+        "RPT_SALES_RECAPITULATION_DETAIL", "RPT_GOODS_RECEIPT_RECAPITULATION",
+        "RPT_SALES_PAYMENT_SUMMARY"
+    )
+    if entity not in priority_entities:
         return f"Temporarily paused non-priority RPT entity {entity}"
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
