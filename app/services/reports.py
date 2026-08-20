@@ -1178,7 +1178,7 @@ def _purchase_order_rows(cur, company_id: int, branch_esb_id: typing.Optional[st
                 "taxPercent": _num(d.get("taxPercent")),
                 "total": _num(d.get("total")),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1256,7 +1256,7 @@ def _purchase_request_rows(cur, company_id: int, branch_esb_id: typing.Optional[
                 "estimatedTotal": _num(d.get("estimatedTotal")),
                 "purposeName": payload.get("purposeName"),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1292,7 +1292,7 @@ def _goods_delivery_rows(cur, company_id: int, branch_esb_id: typing.Optional[st
                 "hpp": _num(d.get("hpp")),
                 "total": _num(d.get("total")),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1317,8 +1317,8 @@ def _manufacturing_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
         for d in [payload]:
             rows.append({
-                "manufacturingNum": payload.get("manufacturingNum"),
-                "manufacturingDate": str(payload.get("manufacturingDate") or "")[:10],
+                "manufacturingNum": payload.get("bomCode") or payload.get("manufacturingNum"),
+                "manufacturingDate": str(payload.get("createdDate") or payload.get("manufacturingDate") or "")[:10],
                 "branchName": payload.get("branchName"),
                 "bomName": payload.get("bomName"),
                 "productName": d.get("productName"),
@@ -1328,7 +1328,7 @@ def _manufacturing_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
                 "hpp": _num(d.get("hpp")),
                 "totalOutput": _num(d.get("totalOutput")),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1356,9 +1356,9 @@ def _disbursement_rows(cur, company_id: int, branch_esb_id: typing.Optional[str]
                 "disbursementNum": payload.get("disbursementNum"),
                 "disbursementDate": str(payload.get("disbursementDate") or "")[:10],
                 "branchName": payload.get("branchName"),
-                "accountName": payload.get("accountName"),
+                "accountName": payload.get("coaDescription") or payload.get("accountName"),
                 "paymentMethodName": payload.get("paymentMethodName"),
-                "partnerName": payload.get("partnerName"),
+                "partnerName": payload.get("supplierName") or payload.get("partnerName"),
                 "purposeName": d.get("purposeName"),
                 "description": d.get("description"),
                 "amount": _num(d.get("amount")),
@@ -1388,12 +1388,12 @@ def _receipt_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
         for d in payload.get("receiptDetail") or []:
             rows.append({
-                "receiptNum": payload.get("receiptNum"),
+                "receiptNum": payload.get("reference") or payload.get("receiptNum"),
                 "receiptDate": str(payload.get("receiptDate") or "")[:10],
                 "branchName": payload.get("branchName"),
-                "accountName": payload.get("accountName"),
+                "accountName": payload.get("coaDescription") or payload.get("accountName"),
                 "paymentMethodName": payload.get("paymentMethodName"),
-                "partnerName": payload.get("partnerName"),
+                "partnerName": payload.get("supplierName") or payload.get("partnerName"),
                 "purposeName": d.get("purposeName"),
                 "description": d.get("description"),
                 "amount": _num(d.get("amount")),
@@ -1423,8 +1423,8 @@ def _advance_sales_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
         for d in [payload]:
             rows.append({
-                "advanceSalesNum": payload.get("advanceSalesNum"),
-                "advanceSalesDate": str(payload.get("advanceSalesDate") or "")[:10],
+                "advanceSalesNum": payload.get("linkAdvancePaymentNum") or payload.get("productSalesNum") or payload.get("advanceSalesNum"),
+                "advanceSalesDate": str(payload.get("createdDate") or payload.get("advanceSalesDate") or "")[:10],
                 "branchName": payload.get("branchName"),
                 "customerName": payload.get("customerName"),
                 "productName": d.get("productName"),
@@ -1433,7 +1433,7 @@ def _advance_sales_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
                 "price": _num(d.get("price")),
                 "total": _num(d.get("total")),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1458,16 +1458,16 @@ def _memorial_journal_rows(cur, company_id: int, branch_esb_id: typing.Optional[
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
         for d in payload.get("memorialJournalDetails") or []:
             rows.append({
-                "journalNum": payload.get("journalNum"),
-                "journalDate": str(payload.get("journalDate") or "")[:10],
+                "journalNum": payload.get("memorialJournalNum") or payload.get("journalNum"),
+                "journalDate": str(payload.get("memorialJournalDate") or payload.get("journalDate") or "")[:10],
                 "branchName": payload.get("branchName"),
-                "accountName": d.get("accountName"),
-                "accountNo": d.get("accountNo"),
+                "accountName": d.get("description") or d.get("coaDescription") or d.get("accountName"),
+                "accountNo": d.get("coaNo") or d.get("accountNo"),
                 "description": d.get("description"),
-                "debit": _num(d.get("debit")),
-                "credit": _num(d.get("credit")),
+                "debit": _num(d.get("drAmount") or d.get("debit")),
+                "credit": _num(d.get("crAmount") or d.get("credit")),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1528,7 +1528,7 @@ def _transfer_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
                 "hpp": _num(d.get("hpp")),
                 "total": _num(d.get("total")),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1564,7 +1564,7 @@ def _production_order_rows(cur, company_id: int, branch_esb_id: typing.Optional[
                 "total": _num(d.get("total")),
                 "dueDate": str(d.get("dueDate") or "")[:10],
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1601,7 +1601,7 @@ def _production_material_rows(cur, company_id: int, branch_esb_id: typing.Option
                 "hpp": _num(d.get("hpp")),
                 "total": _num(d.get("total")),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1703,11 +1703,11 @@ def _ar_suspense_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
                 "suspenseDate": str(payload.get("suspenseDate") or "")[:10],
                 "branchName": payload.get("branchName"),
                 "customerName": payload.get("customerName"),
-                "accountName": d.get("accountName"),
-                "accountNo": d.get("accountNo"),
+                "accountName": d.get("description") or d.get("coaDescription") or d.get("accountName"),
+                "accountNo": d.get("coaNo") or d.get("accountNo"),
                 "description": d.get("description"),
-                "debit": _num(d.get("debit")),
-                "credit": _num(d.get("credit")),
+                "debit": _num(d.get("drAmount") or d.get("debit")),
+                "credit": _num(d.get("crAmount") or d.get("credit")),
                 "balance": _num(d.get("balance")),
                 "dueDate": str(d.get("dueDate") or "")[:10],
                 "statusName": payload.get("statusName"),
@@ -1739,11 +1739,11 @@ def _ap_suspense_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
                 "suspenseDate": str(payload.get("suspenseDate") or "")[:10],
                 "branchName": payload.get("branchName"),
                 "supplierName": payload.get("supplierName"),
-                "accountName": d.get("accountName"),
-                "accountNo": d.get("accountNo"),
+                "accountName": d.get("description") or d.get("coaDescription") or d.get("accountName"),
+                "accountNo": d.get("coaNo") or d.get("accountNo"),
                 "description": d.get("description"),
-                "debit": _num(d.get("debit")),
-                "credit": _num(d.get("credit")),
+                "debit": _num(d.get("drAmount") or d.get("debit")),
+                "credit": _num(d.get("crAmount") or d.get("credit")),
                 "balance": _num(d.get("balance")),
                 "dueDate": str(d.get("dueDate") or "")[:10],
                 "statusName": payload.get("statusName"),
@@ -1781,7 +1781,7 @@ def _employee_advance_rows(cur, company_id: int, branch_esb_id: typing.Optional[
                 "amount": _num(d.get("amount")),
                 "balance": _num(d.get("balance")),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1814,8 +1814,8 @@ def _budget_detail_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
                 "budgetDate": str(payload.get("budgetDate") or "")[:10],
                 "branchName": payload.get("branchName"),
                 "departmentName": payload.get("departmentName"),
-                "accountName": d.get("accountName"),
-                "accountNo": d.get("accountNo"),
+                "accountName": d.get("description") or d.get("coaDescription") or d.get("accountName"),
+                "accountNo": d.get("coaNo") or d.get("accountNo"),
                 "periodName": d.get("periodName"),
                 "budgetAmount": budget_amount,
                 "realizedAmount": realized_amount,
@@ -1850,7 +1850,7 @@ def _budget_revision_rows(cur, company_id: int, branch_esb_id: typing.Optional[s
                 "revisionDate": str(payload.get("revisionDate") or "")[:10],
                 "branchName": payload.get("branchName"),
                 "departmentName": payload.get("departmentName"),
-                "accountName": d.get("accountName"),
+                "accountName": d.get("description") or d.get("coaDescription") or d.get("accountName"),
                 "periodName": d.get("periodName"),
                 "previousAmount": _num(d.get("previousAmount")),
                 "changeAmount": _num(d.get("changeAmount")),
@@ -1899,7 +1899,7 @@ def _purchase_invoice_rows(cur, company_id: int, branch_esb_id: typing.Optional[
                 "taxPercent": _num(d.get("taxPercent")),
                 "total": _num(d.get("total")),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1938,7 +1938,7 @@ def _purchase_return_rows(cur, company_id: int, branch_esb_id: typing.Optional[s
                 "total": _num(d.get("total")),
                 "reason": d.get("reason"),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -1977,7 +1977,7 @@ def _goods_receipt_return_rows(cur, company_id: int, branch_esb_id: typing.Optio
                 "total": _num(d.get("total")),
                 "reason": d.get("reason"),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -2015,7 +2015,7 @@ def _goods_delivery_return_rows(cur, company_id: int, branch_esb_id: typing.Opti
                 "total": _num(d.get("total")),
                 "reason": d.get("reason"),
                 "statusName": payload.get("statusName"),
-                "notes": payload.get("notes"),
+                "notes": payload.get("notes") or payload.get("additionalInfo"),
             })
     return rows
 
@@ -2082,11 +2082,11 @@ def _advance_recap_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
             "employeeName": payload.get("employeeName"),
             "departmentName": payload.get("departmentName"),
             "purposeName": payload.get("purposeName"),
-            "amount": _num(payload.get("amount")),
+            "amount": _num(payload.get("grandTotal") or payload.get("amount")),
             "realizedAmount": _num(payload.get("realizedAmount")),
             "remainingAmount": _num(payload.get("remainingAmount")),
             "statusName": payload.get("statusName"),
-            "notes": payload.get("notes"),
+            "notes": payload.get("notes") or payload.get("additionalInfo"),
         })
     return rows
 
@@ -2110,8 +2110,8 @@ def _item_journal_rows(cur, company_id: int, branch_esb_id: typing.Optional[str]
     for r in cur.fetchall():
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
         rows.append({
-            "journalNum": payload.get("journalNum"),
-            "journalDate": str(payload.get("journalDate") or "")[:10],
+            "journalNum": payload.get("memorialJournalNum") or payload.get("journalNum"),
+            "journalDate": str(payload.get("memorialJournalDate") or payload.get("journalDate") or "")[:10],
             "branchName": payload.get("branchName"),
             "productName": payload.get("productName"),
             "productCode": payload.get("productCode"),
@@ -2122,7 +2122,7 @@ def _item_journal_rows(cur, company_id: int, branch_esb_id: typing.Optional[str]
             "balanceQty": _num(payload.get("balanceQty")),
             "hpp": _num(payload.get("hpp")),
             "reference": payload.get("reference"),
-            "notes": payload.get("notes"),
+            "notes": payload.get("notes") or payload.get("additionalInfo"),
         })
     return rows
 
@@ -2159,7 +2159,7 @@ def _product_sales_actuation_rows(cur, company_id: int, branch_esb_id: typing.Op
             "price": _num(payload.get("price")),
             "total": _num(payload.get("total")),
             "statusName": payload.get("statusName"),
-            "notes": payload.get("notes"),
+            "notes": payload.get("notes") or payload.get("additionalInfo"),
         })
     return rows
 
@@ -2188,12 +2188,12 @@ def _purchase_invoice_payment_rows(cur, company_id: int, branch_esb_id: typing.O
             "invoiceNum": payload.get("invoiceNum"),
             "supplierName": payload.get("supplierName"),
             "branchName": payload.get("branchName"),
-            "accountName": payload.get("accountName"),
+            "accountName": payload.get("coaDescription") or payload.get("accountName"),
             "paymentMethodName": payload.get("paymentMethodName"),
-            "amount": _num(payload.get("amount")),
+            "amount": _num(payload.get("grandTotal") or payload.get("amount")),
             "reference": payload.get("reference"),
             "statusName": payload.get("statusName"),
-            "notes": payload.get("notes"),
+            "notes": payload.get("notes") or payload.get("additionalInfo"),
         })
     return rows
 
