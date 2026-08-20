@@ -146,7 +146,7 @@ TRX_INDEX_VIEW: typing.Dict[str, dict] = {
         "identity_fields": ["disbursementNum"],
     },
     "PRODUCT_SALES": {
-        "index_path": "/sales/sales",
+        "index_path": "/sales/product-sales",
         "doc_num_field": "salesNum",
         "doc_date_field": "salesDate",
         "status_field": "statusName",
@@ -155,7 +155,7 @@ TRX_INDEX_VIEW: typing.Dict[str, dict] = {
         "identity_fields": ["salesNum"],
     },
     "SALES_PAYMENT": {
-        "index_path": "/sales/sales-payment",
+        "index_path": "/sales/product-sales-payment",
         "doc_num_field": "salesPaymentNum",
         "doc_date_field": "salesPaymentDate",
         "status_field": "statusName",
@@ -164,7 +164,7 @@ TRX_INDEX_VIEW: typing.Dict[str, dict] = {
         "identity_fields": ["salesPaymentNum"],
     },
     "PRODUCT_SALES_ACTUATION": {
-        "index_path": "/sales/product-sales-actuation",
+        "index_path": "/sales/product-sales/actuation",
         "doc_num_field": "actuationNum",
         "doc_date_field": "actuationDate",
         "status_field": "statusName",
