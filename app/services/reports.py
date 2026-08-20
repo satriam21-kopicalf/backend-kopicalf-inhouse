@@ -1162,7 +1162,7 @@ def _purchase_order_rows(cur, company_id: int, branch_esb_id: typing.Optional[st
     rows = []
     for r in cur.fetchall():
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
-        for d in payload.get("purchaseOrderDetails") or []:
+        for d in payload.get("purchaseDetails") or []:
             rows.append({
                 "purchaseOrderNum": payload.get("purchaseOrderNum"),
                 "purchaseOrderDate": str(payload.get("purchaseOrderDate") or "")[:10],
@@ -1201,7 +1201,7 @@ def _goods_receipt_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
     rows = []
     for r in cur.fetchall():
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
-        for d in payload.get("goodsReceiptDetails") or []:
+        for d in payload.get("goodsReceiptDetail") or []:
             rows.append({
                 "goodsReceiptNum": payload.get("goodsReceiptNum"),
                 "goodsReceiptDate": str(payload.get("goodsReceiptDate") or "")[:10],
@@ -1315,7 +1315,7 @@ def _manufacturing_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
     rows = []
     for r in cur.fetchall():
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
-        for d in payload.get("manufacturingDetails") or []:
+        for d in [payload]:
             rows.append({
                 "manufacturingNum": payload.get("manufacturingNum"),
                 "manufacturingDate": str(payload.get("manufacturingDate") or "")[:10],
@@ -1351,7 +1351,7 @@ def _disbursement_rows(cur, company_id: int, branch_esb_id: typing.Optional[str]
     rows = []
     for r in cur.fetchall():
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
-        for d in payload.get("disbursementDetails") or []:
+        for d in [payload]:
             rows.append({
                 "disbursementNum": payload.get("disbursementNum"),
                 "disbursementDate": str(payload.get("disbursementDate") or "")[:10],
@@ -1386,7 +1386,7 @@ def _receipt_rows(cur, company_id: int, branch_esb_id: typing.Optional[str],
     rows = []
     for r in cur.fetchall():
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
-        for d in payload.get("receiptDetails") or []:
+        for d in payload.get("receiptDetail") or []:
             rows.append({
                 "receiptNum": payload.get("receiptNum"),
                 "receiptDate": str(payload.get("receiptDate") or "")[:10],
@@ -1421,7 +1421,7 @@ def _advance_sales_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
     rows = []
     for r in cur.fetchall():
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
-        for d in payload.get("advanceSalesDetails") or []:
+        for d in [payload]:
             rows.append({
                 "advanceSalesNum": payload.get("advanceSalesNum"),
                 "advanceSalesDate": str(payload.get("advanceSalesDate") or "")[:10],
@@ -1456,7 +1456,7 @@ def _memorial_journal_rows(cur, company_id: int, branch_esb_id: typing.Optional[
     rows = []
     for r in cur.fetchall():
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
-        for d in payload.get("journalDetails") or []:
+        for d in payload.get("memorialJournalDetails") or []:
             rows.append({
                 "journalNum": payload.get("journalNum"),
                 "journalDate": str(payload.get("journalDate") or "")[:10],
