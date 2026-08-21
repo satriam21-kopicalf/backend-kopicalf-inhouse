@@ -47,7 +47,7 @@ BACKFILL_NIGHT_END = int(os.getenv("BACKFILL_WINDOW_END", "8"))        # WIB
 DELTA_WINDOW_DAYS = 2       # T-2 -> T
 RATE_LIMIT_SECONDS = 0.5    # between view calls
 PAGE_SLEEP_SECONDS = 0.3    # between index pages
-MAX_MONTHS_PER_RUN = 2      # backfill fairness: months per task invocation
+MAX_MONTHS_PER_RUN = 12     # backfill fairness: months per task invocation
 AUTH_LOCK_TTL = 60          # seconds
 COMPANY_LOCK_TTL = 3600     # seconds; renewed per chunk
 
