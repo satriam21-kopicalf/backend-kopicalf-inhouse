@@ -752,8 +752,7 @@ def backfill_entity(self, company_id: int, entity: str):
         return f"Unknown entity {entity}"
     priority_entities = (
         "GOODS_RECEIPT", "PRODUCT_SALES", "SALES_PAYMENT", "PRODUCT_SALES_ACTUATION",
-        "RPT_SALES_RECAPITULATION_DETAIL", "RPT_GOODS_RECEIPT_RECAPITULATION",
-        "RPT_SALES_PAYMENT_SUMMARY"
+        "RPT_GOODS_RECEIPT_RECAPITULATION", "RPT_SALES_PAYMENT_SUMMARY"
     )
     if entity not in priority_entities:
         return f"Temporarily paused non-priority TRX entity {entity}"
@@ -1079,12 +1078,6 @@ RPT_DIRECT: typing.Dict[str, dict] = {
         "window_days": 2,   # yesterday + today
     },
     # ── Priority Reports (Sprint 4) ──────────────────────────────────────────
-    # Sales Recapitulation Detail Report - Detail penjualan per produk/cabang
-    "RPT_SALES_RECAPITULATION_DETAIL": {
-        "path": "/sales/product-sales",
-        "params_for": lambda d: {"dateFrom": d.isoformat(), "dateTo": d.isoformat()},
-        "window_days": 2,   # yesterday + today (T-2 -> T)
-    },
     # Goods Receipt Recapitulation Report - Rekapitulasi penerimaan barang
     "RPT_GOODS_RECEIPT_RECAPITULATION": {
         "path": "/report/goods-receipt-recapitulation",
@@ -1257,8 +1250,7 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
         return f"Unknown RPT entity {entity}"
     priority_entities = (
         "GOODS_RECEIPT", "PRODUCT_SALES", "SALES_PAYMENT", "PRODUCT_SALES_ACTUATION",
-        "RPT_SALES_RECAPITULATION_DETAIL", "RPT_GOODS_RECEIPT_RECAPITULATION",
-        "RPT_SALES_PAYMENT_SUMMARY"
+        "RPT_GOODS_RECEIPT_RECAPITULATION", "RPT_SALES_PAYMENT_SUMMARY"
     )
     if entity not in priority_entities:
         return f"Temporarily paused non-priority RPT entity {entity}"

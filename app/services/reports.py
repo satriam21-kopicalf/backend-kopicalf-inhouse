@@ -1011,9 +1011,9 @@ REPORTS: typing.Dict[str, dict] = {
         "title": "Sales Recapitulation Detail Report",
         "title_id": "Laporan Rekapitulasi Penjualan Detail",
         "category": "sales",
-        "tier": "T2",
-        "source": "rpt",
-        "entity": "RPT_SALES_RECAPITULATION_DETAIL",
+        "tier": "T1",
+        "source": "trx",
+        "entity": "PRODUCT_SALES",
         "description": "Detail sales recapitulation by product and branch",
         "companies": [1, 2, 3, 4, 5, 6, 7, 8],
         "columns": [
@@ -1667,10 +1667,10 @@ def _product_sales_rows(cur, company_id: int, branch_esb_id: typing.Optional[str
     rows = []
     for r in cur.fetchall():
         payload = r["payload"] if isinstance(r["payload"], dict) else json.loads(r["payload"])
-        for d in payload.get("salesDetails") or []:
+        for d in payload.get("productSalesDetails") or []:
             rows.append(_flatten_row(payload, locals().get('d', {}), {
-                "salesNum": payload.get("salesNum"),
-                "salesDate": str(payload.get("salesDate") or "")[:10],
+                "salesNum": payload.get("productSalesNum"),
+                "salesDate": str(payload.get("productSalesDate") or "")[:10],
                 "branchName": payload.get("branchName"),
                 "customerName": payload.get("customerName"),
                 "productName": d.get("productName"),
