@@ -891,23 +891,40 @@ def backfill_router():
         converge_to = today - timedelta(days=DELTA_WINDOW_DAYS)
         dispatched = []
         for company_id in companies:
-            if _company_locked(company_id):
-                continue  # an active chain holds this company; avoid queue pileup
             company_pending = 0
+            
+            # Count pending entities for this company
             for entity in TRX_INDEX_VIEW:
                 wm = _get_watermark(cur, company_id, entity, "backfill")
                 if not wm or not wm["watermark_date"] or wm["watermark_date"] < converge_to:
                     company_pending += 1
-                    if wm and wm["status"] == "running" and wm.get("updated_at") \
-                            and (datetime.now(timezone.utc) - wm["updated_at"]).total_seconds() < 6 * 3600:
-                        continue  # active chain from tonight; don't double-enqueue
-                    backfill_entity.delay(company_id, entity)
-                    dispatched.append(f"{company_id}:{entity}")
-            # direct-report historical backfill (same company lock namespace)
             for entity in RPT_DIRECT:
                 wm = _get_watermark(cur, company_id, entity, "backfill")
                 if not wm or wm.get("status") != "done":
                     company_pending += 1
+            
+            # If the company is locked (actively running), we just wait.
+            # We DO NOT dispatch anything, but we also MUST NOT move to the next company
+            # because this company is still pending!
+            if _company_locked(company_id):
+                if company_pending > 0:
+                    break  # Stop here, wait for this company to finish
+                continue
+                
+            # If we reach here, the company is NOT locked.
+            # Let's dispatch pending entities.
+            for entity in TRX_INDEX_VIEW:
+                wm = _get_watermark(cur, company_id, entity, "backfill")
+                if not wm or not wm["watermark_date"] or wm["watermark_date"] < converge_to:
+                    if wm and wm["status"] == "running" and wm.get("updated_at") \
+                            and (datetime.now(timezone.utc) - wm["updated_at"]).total_seconds() < 6 * 3600:
+                        continue
+                    backfill_entity.delay(company_id, entity)
+                    dispatched.append(f"{company_id}:{entity}")
+                    
+            for entity in RPT_DIRECT:
+                wm = _get_watermark(cur, company_id, entity, "backfill")
+                if not wm or wm.get("status") != "done":
                     rpt_backfill_entity.delay(company_id, entity)
                     dispatched.append(f"{company_id}:{entity}")
                     
@@ -1262,10 +1279,11 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
         username = co["esb_username"] or ESB_FALLBACK_USERNAME
         password = co["esb_password"] or ESB_FALLBACK_PASSWORD
 
-        lock = _company_lock(company_id)
+        # Use a separate lock for RPT so it can run parallel to TRX for the same company
+        lock = _redis().lock(f"bf_company_rpt_{company_id}", timeout=600)
         if not lock.acquire(blocking=False):
             rpt_backfill_entity.apply_async((company_id, entity), countdown=600)
-            return f"{code}:{entity} busy (company lock held); re-enqueued +10min"
+            return f"{code}:{entity} busy (RPT company lock held); re-enqueued +10min"
 
         today = date.today()
         converge_to = today - timedelta(days=cfg["window_days"])  # delta refresh owns the rest

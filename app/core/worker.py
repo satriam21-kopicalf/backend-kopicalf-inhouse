@@ -80,7 +80,7 @@ celery_app.conf.beat_schedule = {
     # (window T-1..T; deep T-7 refresh stays on the 06:00 beat below)
     'trx-direct-reports-delta': {
         'task': 'app.services.trx_engine.sync_direct_reports_delta',
-        'schedule': crontab(minute='*/30'),
+        'schedule': crontab(minute='*/15'),
     },
     # Direct period-based reports DEEP refresh (06:00 WIB, window T-7)
     'trx-direct-reports': {

@@ -228,21 +228,21 @@ def _derive_esb_id(item: dict, id_field: str) -> str:
 def _normalize(entity: str, item: dict, esb_id: str, company_id: int):
     if entity == "BRANCH":
         return ("md_outlets", (esb_id, company_id, item.get("branchName"), item.get("branchCode"),
-                               True, None, None, None))
+                               True, None, None, None, json.dumps(item)))
     if entity == "PRODUCT":
         return ("md_products", (esb_id, company_id, item.get("productName"), item.get("productCode") or "",
                                 item.get("bomName"), item.get("categoryName"), item.get("subCategoryName"),
-                                item.get("categoryTypeName"), bool(item.get("flagActive", 1))))
+                                item.get("categoryTypeName"), bool(item.get("flagActive", 1)), json.dumps(item)))
     if entity == "CATEGORY":
         return ("md_categories", (esb_id, company_id, item.get("categoryCode"), item.get("categoryName"),
                                   item.get("categoryTypeName"), bool(item.get("flagActive", 1)),
-                                  item.get("categoryTypeID"), item.get("notes")))
+                                  item.get("categoryTypeID"), item.get("notes"), json.dumps(item)))
     if entity == "PRODUCT_SUB_CATEGORY":
         return ("md_sub_categories", (esb_id, company_id, None, None, item.get("subCategoryName"),
-                                      bool(item.get("flagActive", 1)), item.get("deadStockThreshold"), item.get("notes")))
+                                      bool(item.get("flagActive", 1)), item.get("deadStockThreshold"), item.get("notes"), json.dumps(item)))
     if entity == "PRODUCT_UNIT":
         return ("md_units", (esb_id, company_id, item.get("metricName"), item.get("uomName"),
-                             bool(item.get("flagActive", 1))))
+                             bool(item.get("flagActive", 1)), json.dumps(item)))
     if entity == "PRICELIST":
         ab = item.get("applicableBranch") or {}
         branch = None
@@ -256,56 +256,56 @@ def _normalize(entity: str, item: dict, esb_id: str, company_id: int):
             item.get("productName"), item.get("productCode"), item.get("unit"), item.get("currencyName"),
             item.get("expireDate"), item.get("pricelistNum"), item.get("productDetailID"),
             item.get("uomID"), item.get("currencyID"),
-            json.dumps(ab, default=str)))
+            json.dumps(ab, default=str), json.dumps(item)))
     if entity == "SUPPLIER":
         return ("md_suppliers", (esb_id, company_id, item.get("supplierName"), None, item.get("category"),
                                  "ACTIVE" if item.get("flagActive") else "INACTIVE",
                                  item.get("address"), item.get("contactPerson"), item.get("cellPhone"),
                                  item.get("dueDate"), item.get("supplierCategoryID"),
-                                 bool(item.get("lockVAT", False)), bool(item.get("vatSubject", False))))
+                                 bool(item.get("lockVAT", False)), bool(item.get("vatSubject", False)), json.dumps(item)))
     if entity == "CUSTOMER":
         return ("md_customers", (esb_id, company_id, item.get("customerName"), item.get("customerCode") or "",
                                  str(item.get("customerCategoryID") or ""), item.get("customerCategoryName"),
                                  item.get("paymentDueDays") or 0, item.get("address"), item.get("picName"),
                                  item.get("picPhone"), bool(item.get("flagActive", 1)),
-                                 bool(item.get("lockVat", 0))))
+                                 bool(item.get("lockVat", 0)), json.dumps(item)))
     if entity == "BOM":
         return ("md_boms", (esb_id, company_id, item.get("productID"), item.get("bomCode"), item.get("bomName"),
                             1.0, bool(item.get("flagActive", 1)), item.get("bomTypeID"),
-                            item.get("bomTypeName"), item.get("productName"), item.get("uomName")))
+                            item.get("bomTypeName"), item.get("productName"), item.get("uomName"), json.dumps(item)))
     if entity == "DOCUMENT_TEMPLATE":
         return ("md_document_templates", (esb_id, company_id, item.get("requestTemplateName"),
                                           item.get("requestTemplateTypeNames"), str(item.get("requestTemplateID")),
-                                          bool(item.get("flagActive", 1))))
+                                          bool(item.get("flagActive", 1)), json.dumps(item)))
     if entity == "ACC_PURPOSE":
         return ("md_purposes", (esb_id, company_id, item.get("purposeName"), item.get("purposeAccount"),
                                 item.get("purposeCoaNo"), json.dumps(item.get("purposeAppliedTo") or []),
-                                bool(item.get("flagActive", True))))
+                                bool(item.get("flagActive", True)), json.dumps(item)))
     if entity == "ACC_COST_CENTER":
         return ("md_cost_centers", (esb_id, company_id, item.get("costCenter"), item.get("costCenterName"),
-                                    bool(item.get("flagActive", True))))
+                                    bool(item.get("flagActive", True)), json.dumps(item)))
     if entity == "ACC_COA":
         return ("md_coas", (esb_id, company_id, item.get("coaNo"), item.get("coaLevel"),
                             item.get("description"), item.get("currency"),
-                            str(item.get("branchID") or ""), bool(item.get("flagActive", 0))))
+                            str(item.get("branchID") or ""), bool(item.get("flagActive", 0)), json.dumps(item)))
     if entity == "COMP_PROJECT":
         return ("md_projects", (esb_id, company_id, item.get("projectName"), item.get("projectCode"),
-                                bool(item.get("flagActive", True))))
+                                bool(item.get("flagActive", True)), json.dumps(item)))
     if entity == "COMP_USER":
         return ("md_users", (esb_id, company_id, item.get("username"), item.get("fullName"),
                              item.get("userRoleID"), item.get("userRoleDesc"),
-                             bool(item.get("flagActive", 1))))
+                             bool(item.get("flagActive", 1)), json.dumps(item)))
     if entity == "PARTNER_CUST_CAT":
         return ("md_customer_categories", (esb_id, company_id, item.get("customerCategoryName"),
-                                           bool(item.get("flagActive", 1))))
+                                           bool(item.get("flagActive", 1)), json.dumps(item)))
     if entity == "PARTNER_SUPP_CAT":
-        return ("md_supplier_categories", (esb_id, company_id, item.get("supplierCategoryName"), True))
+        return ("md_supplier_categories", (esb_id, company_id, item.get("supplierCategoryName"), True, json.dumps(item)))
     if entity == "CUSTOMER_PRICELIST":
         return ("md_customer_pricelists", (esb_id, company_id, item.get("customerName"),
                                            item.get("productName"), item.get("productCode"),
                                            item.get("uomName"), item.get("currencyName"),
                                            item.get("price") or 0, item.get("priceDate"),
-                                           item.get("expireDate"), True))
+                                           item.get("expireDate"), True, json.dumps(item)))
     if entity == "ACC_TAX":
         return ("esb_raw_staging", None)  # staging-only for now (empty dataset)
     return ("esb_raw_staging", None)
@@ -313,38 +313,38 @@ def _normalize(entity: str, item: dict, esb_id: str, company_id: int):
 
 UPSERTS = {
     "md_outlets": """
-        INSERT INTO md_outlets (esb_id, company_id, name, branch_code, is_active, location_name, stock, available_stock)
+        INSERT INTO md_outlets (esb_id, company_id, name, branch_code, is_active, location_name, stock, available_stock, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, branch_code=EXCLUDED.branch_code, is_active=EXCLUDED.is_active,
             location_name=EXCLUDED.location_name, stock=EXCLUDED.stock, available_stock=EXCLUDED.available_stock,
-            updated_at=NOW()""",
+            raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_products": """
         INSERT INTO md_products (esb_id, company_id, name, product_code, bom_name, category_name,
-            sub_category_name, category_type_name, flag_active)
+            sub_category_name, category_type_name, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, product_code=EXCLUDED.product_code, bom_name=EXCLUDED.bom_name,
             category_name=EXCLUDED.category_name, sub_category_name=EXCLUDED.sub_category_name,
-            category_type_name=EXCLUDED.category_type_name, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+            category_type_name=EXCLUDED.category_type_name, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_categories": """
-        INSERT INTO md_categories (esb_id, company_id, code, name, type_name, flag_active, category_type_id, notes)
+        INSERT INTO md_categories (esb_id, company_id, code, name, type_name, flag_active, category_type_id, notes, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             code=EXCLUDED.code, name=EXCLUDED.name, type_name=EXCLUDED.type_name,
             flag_active=EXCLUDED.flag_active, category_type_id=EXCLUDED.category_type_id,
-            notes=EXCLUDED.notes, updated_at=NOW()""",
+            notes=EXCLUDED.notes, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_sub_categories": """
-        INSERT INTO md_sub_categories (esb_id, company_id, category_esb_id, code, name, flag_active, dead_stock_threshold, notes)
+        INSERT INTO md_sub_categories (esb_id, company_id, category_esb_id, code, name, flag_active, dead_stock_threshold, notes, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             category_esb_id=EXCLUDED.category_esb_id, code=EXCLUDED.code, name=EXCLUDED.name,
             flag_active=EXCLUDED.flag_active, dead_stock_threshold=EXCLUDED.dead_stock_threshold,
-            notes=EXCLUDED.notes, updated_at=NOW()""",
+            notes=EXCLUDED.notes, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_units": """
-        INSERT INTO md_units (esb_id, company_id, code, name, flag_active)
+        INSERT INTO md_units (esb_id, company_id, code, name, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
-            code=EXCLUDED.code, name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+            code=EXCLUDED.code, name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_pricelists": """
         INSERT INTO md_pricelists (esb_id, company_id, product_esb_id, branch_esb_id, price, flag_active,
             price_date, supplier_name, product_name, product_code, unit_name, currency, expired_date,
-            pricelist_num, product_detail_esb_id, uom_id, currency_id, applicable_branch)
+            pricelist_num, product_detail_esb_id, uom_id, currency_id, applicable_branch, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             product_esb_id=EXCLUDED.product_esb_id, branch_esb_id=EXCLUDED.branch_esb_id,
             price=EXCLUDED.price, flag_active=EXCLUDED.flag_active, price_date=EXCLUDED.price_date,
@@ -352,77 +352,77 @@ UPSERTS = {
             product_code=EXCLUDED.product_code, unit_name=EXCLUDED.unit_name, currency=EXCLUDED.currency,
             expired_date=EXCLUDED.expired_date, pricelist_num=EXCLUDED.pricelist_num,
             product_detail_esb_id=EXCLUDED.product_detail_esb_id, uom_id=EXCLUDED.uom_id,
-            currency_id=EXCLUDED.currency_id, applicable_branch=EXCLUDED.applicable_branch, updated_at=NOW()""",
+            currency_id=EXCLUDED.currency_id, applicable_branch=EXCLUDED.applicable_branch, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_suppliers": """
         INSERT INTO md_suppliers (esb_id, company_id, name, type, supplier_category, status, address,
-            contact_person, cell_phone, due_date, category_esb_id, lock_vat, vat_subject)
+            contact_person, cell_phone, due_date, category_esb_id, lock_vat, vat_subject, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, supplier_category=EXCLUDED.supplier_category, status=EXCLUDED.status,
             address=EXCLUDED.address, contact_person=EXCLUDED.contact_person, cell_phone=EXCLUDED.cell_phone,
             due_date=EXCLUDED.due_date, category_esb_id=EXCLUDED.category_esb_id,
-            lock_vat=EXCLUDED.lock_vat, vat_subject=EXCLUDED.vat_subject, updated_at=NOW()""",
+            lock_vat=EXCLUDED.lock_vat, vat_subject=EXCLUDED.vat_subject, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_customers": """
         INSERT INTO md_customers (esb_id, company_id, name, code, category_esb_id, category_name,
-            payment_due_days, address, pic_name, pic_phone, flag_active, lock_vat)
+            payment_due_days, address, pic_name, pic_phone, flag_active, lock_vat, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, code=EXCLUDED.code, category_esb_id=EXCLUDED.category_esb_id,
             category_name=EXCLUDED.category_name, payment_due_days=EXCLUDED.payment_due_days,
             address=EXCLUDED.address, pic_name=EXCLUDED.pic_name, pic_phone=EXCLUDED.pic_phone,
-            flag_active=EXCLUDED.flag_active, lock_vat=EXCLUDED.lock_vat, updated_at=NOW()""",
+            flag_active=EXCLUDED.flag_active, lock_vat=EXCLUDED.lock_vat, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_boms": """
         INSERT INTO md_boms (esb_id, company_id, product_esb_id, code, name, output_qty, flag_active,
-            bom_type_id, bom_type_name, product_name, uom_name)
+            bom_type_id, bom_type_name, product_name, uom_name, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             product_esb_id=EXCLUDED.product_esb_id, code=EXCLUDED.code, name=EXCLUDED.name,
             output_qty=EXCLUDED.output_qty, flag_active=EXCLUDED.flag_active,
             bom_type_id=EXCLUDED.bom_type_id, bom_type_name=EXCLUDED.bom_type_name,
-            product_name=EXCLUDED.product_name, uom_name=EXCLUDED.uom_name, updated_at=NOW()""",
+            product_name=EXCLUDED.product_name, uom_name=EXCLUDED.uom_name, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_document_templates": """
-        INSERT INTO md_document_templates (esb_id, company_id, name, document_type, template_code, flag_active)
+        INSERT INTO md_document_templates (esb_id, company_id, name, document_type, template_code, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, document_type=EXCLUDED.document_type, template_code=EXCLUDED.template_code,
-            flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+            flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_purposes": """
-        INSERT INTO md_purposes (esb_id, company_id, name, account, coa_no, applied_to, flag_active)
+        INSERT INTO md_purposes (esb_id, company_id, name, account, coa_no, applied_to, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, account=EXCLUDED.account, coa_no=EXCLUDED.coa_no,
-            applied_to=EXCLUDED.applied_to, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+            applied_to=EXCLUDED.applied_to, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_coas": """
-        INSERT INTO md_coas (esb_id, company_id, coa_no, coa_level, description, currency, branch_esb_id, flag_active)
+        INSERT INTO md_coas (esb_id, company_id, coa_no, coa_level, description, currency, branch_esb_id, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             coa_no=EXCLUDED.coa_no, coa_level=EXCLUDED.coa_level, description=EXCLUDED.description,
             currency=EXCLUDED.currency, branch_esb_id=EXCLUDED.branch_esb_id,
-            flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+            flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_projects": """
-        INSERT INTO md_projects (esb_id, company_id, name, code, flag_active)
+        INSERT INTO md_projects (esb_id, company_id, name, code, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
-            name=EXCLUDED.name, code=EXCLUDED.code, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+            name=EXCLUDED.name, code=EXCLUDED.code, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_users": """
-        INSERT INTO md_users (esb_id, company_id, username, full_name, role_id, role_desc, flag_active)
+        INSERT INTO md_users (esb_id, company_id, username, full_name, role_id, role_desc, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             username=EXCLUDED.username, full_name=EXCLUDED.full_name, role_id=EXCLUDED.role_id,
-            role_desc=EXCLUDED.role_desc, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+            role_desc=EXCLUDED.role_desc, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_customer_categories": """
-        INSERT INTO md_customer_categories (esb_id, company_id, name, flag_active)
+        INSERT INTO md_customer_categories (esb_id, company_id, name, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
-            name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+            name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_supplier_categories": """
-        INSERT INTO md_supplier_categories (esb_id, company_id, name, flag_active)
+        INSERT INTO md_supplier_categories (esb_id, company_id, name, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
-            name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+            name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_customer_pricelists": """
         INSERT INTO md_customer_pricelists (esb_id, company_id, customer_name, product_name, product_code,
-            uom_name, currency_name, price, price_date, expire_date, flag_active)
+            uom_name, currency_name, price, price_date, expire_date, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             customer_name=EXCLUDED.customer_name, product_name=EXCLUDED.product_name,
             product_code=EXCLUDED.product_code, uom_name=EXCLUDED.uom_name,
             currency_name=EXCLUDED.currency_name, price=EXCLUDED.price,
             price_date=EXCLUDED.price_date, expire_date=EXCLUDED.expire_date,
-            flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+            flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "md_cost_centers": """
-        INSERT INTO md_cost_centers (esb_id, company_id, code, name, flag_active)
+        INSERT INTO md_cost_centers (esb_id, company_id, code, name, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
-            code=EXCLUDED.code, name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, updated_at=NOW()""",
+            code=EXCLUDED.code, name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
 }
 
 
@@ -538,12 +538,12 @@ def _sync_product_details(company_id: int, client: ESBClient):
                 if rows:
                     execute_values(cur, """
                         INSERT INTO md_product_details (esb_id, company_id, product_esb_id, uom_id, metric_id,
-                            uom_name, qty, base_price, sku, is_base, is_stock, is_purchase, is_transfer, is_sales, flag_active)
+                            uom_name, qty, base_price, sku, is_base, is_stock, is_purchase, is_transfer, is_sales, flag_active, raw_data)
                         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
                             qty=EXCLUDED.qty, base_price=EXCLUDED.base_price, sku=EXCLUDED.sku,
                             is_base=EXCLUDED.is_base, is_stock=EXCLUDED.is_stock, is_purchase=EXCLUDED.is_purchase,
                             is_transfer=EXCLUDED.is_transfer, is_sales=EXCLUDED.is_sales,
-                            flag_active=EXCLUDED.flag_active, updated_at=NOW()
+                            flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()
                     """, rows)
                     conn.commit()
             except Exception:
