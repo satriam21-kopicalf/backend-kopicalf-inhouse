@@ -893,9 +893,11 @@ def backfill_router():
         for company_id in companies:
             if _company_locked(company_id):
                 continue  # an active chain holds this company; avoid queue pileup
+            company_pending = 0
             for entity in TRX_INDEX_VIEW:
                 wm = _get_watermark(cur, company_id, entity, "backfill")
                 if not wm or not wm["watermark_date"] or wm["watermark_date"] < converge_to:
+                    company_pending += 1
                     if wm and wm["status"] == "running" and wm.get("updated_at") \
                             and (datetime.now(timezone.utc) - wm["updated_at"]).total_seconds() < 6 * 3600:
                         continue  # active chain from tonight; don't double-enqueue
@@ -905,8 +907,14 @@ def backfill_router():
             for entity in RPT_DIRECT:
                 wm = _get_watermark(cur, company_id, entity, "backfill")
                 if not wm or wm.get("status") != "done":
+                    company_pending += 1
                     rpt_backfill_entity.delay(company_id, entity)
                     dispatched.append(f"{company_id}:{entity}")
+                    
+            # SEQUENTIAL GATE: Do not move to the next company until this one is 100% converged
+            if company_pending > 0:
+                break
+                
         return f"Dispatched {len(dispatched)}: {dispatched}"
     finally:
         cur.close()
