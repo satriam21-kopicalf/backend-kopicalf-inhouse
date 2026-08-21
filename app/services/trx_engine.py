@@ -41,7 +41,7 @@ from app.services.tasks import (
 ESB_API_BASE_URL = os.getenv("ESB_CORE_URL", "https://services.esb.co.id/core")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-BACKFILL_START = os.getenv("BACKFILL_START_DATE", "2025-06-01")   # Historical data start: 2025-06-01
+BACKFILL_START = os.getenv("BACKFILL_START_DATE", "2026-08-01")   # Historical data start: 2026-08-01
 BACKFILL_NIGHT_START = int(os.getenv("BACKFILL_WINDOW_START", "19"))   # WIB
 BACKFILL_NIGHT_END = int(os.getenv("BACKFILL_WINDOW_END", "8"))        # WIB
 DELTA_WINDOW_DAYS = 2       # T-2 -> T
@@ -751,8 +751,7 @@ def backfill_entity(self, company_id: int, entity: str):
     if entity not in TRX_INDEX_VIEW:
         return f"Unknown entity {entity}"
     priority_entities = (
-        "GOODS_RECEIPT", "PRODUCT_SALES", "SALES_PAYMENT", "PRODUCT_SALES_ACTUATION",
-        "RPT_GOODS_RECEIPT_RECAPITULATION", "RPT_SALES_PAYMENT_SUMMARY"
+        "PRODUCT_SALES", "RPT_GOODS_RECEIPT_RECAPITULATION"
     )
     if entity not in priority_entities:
         return f"Temporarily paused non-priority TRX entity {entity}"
@@ -1249,8 +1248,7 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
     if not cfg:
         return f"Unknown RPT entity {entity}"
     priority_entities = (
-        "GOODS_RECEIPT", "PRODUCT_SALES", "SALES_PAYMENT", "PRODUCT_SALES_ACTUATION",
-        "RPT_GOODS_RECEIPT_RECAPITULATION", "RPT_SALES_PAYMENT_SUMMARY"
+        "PRODUCT_SALES", "RPT_GOODS_RECEIPT_RECAPITULATION"
     )
     if entity not in priority_entities:
         return f"Temporarily paused non-priority RPT entity {entity}"

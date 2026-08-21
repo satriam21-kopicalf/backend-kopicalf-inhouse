@@ -328,10 +328,58 @@ async def get_export(export_id: str):
         cur.close()
         conn.close()
 
+from pydantic import BaseModel
+import typing
+
+class SyncTriggerRequest(BaseModel):
+    company_id: int
+    module: str
+    entities: typing.Optional[typing.List[str]] = None
+    date_from: typing.Optional[str] = None
+    date_to: typing.Optional[str] = None
+
 @app.post("/sync/trigger")
-async def trigger_sync():
-    sync_master_data.delay()
-    return {"status": "triggered", "message": "Manual synchronization triggered via Celery worker."}
+async def trigger_sync(req: typing.Optional[SyncTriggerRequest] = None):
+    # Fallback to old behavior if no payload
+    if not req:
+        sync_master_data.delay()
+        return {"status": "triggered", "message": "Manual global synchronization triggered via Celery worker."}
+        
+    from app.core.db import get_db_connection
+    from app.services.tasks import sync_company_data, MASTER_ENTITIES
+    from app.services.trx_engine import backfill_entity, rpt_backfill_entity
+    from datetime import date
+    from fastapi import HTTPException
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT esb_company_code, esb_username, esb_password FROM company_configs WHERE id = %s", (req.company_id,))
+        co = cur.fetchone()
+        if not co:
+            raise HTTPException(status_code=404, detail="Company not found")
+        
+        if req.module == "master":
+            ents = req.entities if req.entities else MASTER_ENTITIES
+            sync_company_data.delay(req.company_id, co[0], co[1], co[2], ents)
+            return {"status": "triggered", "message": f"Master sync triggered for company {req.company_id}", "entities": ents}
+            
+        elif req.module == "trx":
+            ents = req.entities if req.entities else ["PRODUCT_SALES"]
+            for ent in ents:
+                backfill_entity.delay(req.company_id, ent)
+            return {"status": "triggered", "message": f"TRX backfill triggered for company {req.company_id}", "entities": ents}
+
+        elif req.module == "rpt":
+            ents = req.entities if req.entities else ["RPT_GOODS_RECEIPT_RECAPITULATION"]
+            for ent in ents:
+                rpt_backfill_entity.delay(req.company_id, ent)
+            return {"status": "triggered", "message": f"RPT backfill triggered for company {req.company_id}", "entities": ents}
+        else:
+            raise HTTPException(status_code=400, detail="module must be master, trx, or rpt")
+    finally:
+        cur.close()
+        conn.close()
 
 @app.get("/api/v1/companies")
 async def list_companies():
