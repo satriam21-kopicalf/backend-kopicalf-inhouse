@@ -25,15 +25,13 @@ import typing
 import urllib.parse
 from datetime import datetime, timezone, date, timedelta
 
-import httpx
-import pytz
 import redis as redis_lib
 from psycopg2.extras import execute_values, RealDictCursor
 
 from app.core.worker import celery_app
 from app.core.db import get_db_connection
 from app.services.tasks import (
-    ESBClient, _esb_company_token, _esb_login, _extract_page, _is_engine_enabled,
+    ESBClient, _esb_company_token, _extract_page, _is_engine_enabled,
     ESB_FALLBACK_USERNAME, ESB_FALLBACK_PASSWORD, PAGE_SIZE,
     CircuitBreakerOpenException,
 )

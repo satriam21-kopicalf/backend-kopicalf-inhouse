@@ -20,6 +20,7 @@ Report Tiers:
 - T2: CALF-aggregated (report_raw_staging) - pre-computed reports
 """
 import json
+import re
 import typing
 from datetime import date
 
@@ -66,7 +67,7 @@ REPORT_COMPANIES = {
     "daily-sales-payment-recapitulation-report": [1, 8],
     # Priority Reports (Sprint 4)
     "sales-recapitulation-detail-report": [1, 2, 3, 4, 5, 6, 7, 8],
-    "goods-receipt-recapitulation-detail-report": [1, 2, 3, 4, 5, 6, 7, 8],
+    "goods-receipt-recap-report": [1, 2, 3, 4, 5, 6, 7, 8],
 }
 
 REPORTS: typing.Dict[str, dict] = {
@@ -560,34 +561,78 @@ REPORTS: typing.Dict[str, dict] = {
         ],
     },
     # ─────────────────────────────────────────────────────────────────────────────
-    # PRODUCT SALES REPORTS (T1)
+    # POS SALES (bill-level summary; line-level lives in
+    # sales-recapitulation-detail-report which joins head+lines ERP-identically)
     # ─────────────────────────────────────────────────────────────────────────────
-    "product-sales-recapitulation-report": {
-        "title": "Product Sales Recapitulation Report",
-        "title_id": "Laporan Rekapitulasi Penjualan Produk",
-        "category": "product-sales",
+    "pos-sales-summary-report": {
+        "title": "POS Sales Summary by Bill",
+        "title_id": "Laporan Rekap Penjualan POS (per Bill)",
+        "category": "sales",
         "tier": "T1",
-        "source": "trx",
-        "entity": "PRODUCT_SALES",
-        "description": "Product sales summary",
-        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        "source": "table",
+        "table": "report_pos_sales_head",
+        "date_col": "sales_date",
+        "branch_col": "branch_name",
+        "order_col": "sales_date",
+        "description": "POS sales bill headers with payment totals",
+        "companies": [1],
         "columns": [
-            {"key": "salesNum", "label": "Sales Number"},
-            {"key": "salesDate", "label": "Date"},
-            {"key": "branchName", "label": "Branch"},
-            {"key": "customerName", "label": "Customer"},
-            {"key": "productName", "label": "Product"},
-            {"key": "productCode", "label": "Product Code"},
-            {"key": "uomName", "label": "Unit"},
-            {"key": "qty", "label": "Quantity", "numeric": True},
-            {"key": "price", "label": "Price", "numeric": True},
-            {"key": "discountPercent", "label": "Discount %", "numeric": True},
-            {"key": "subTotal", "label": "Sub Total", "numeric": True},
-            {"key": "taxPercent", "label": "Tax %", "numeric": True},
-            {"key": "total", "label": "Total", "numeric": True},
-            {"key": "statusName", "label": "Status"},
+            {"key": "sales_num", "label": "Sales Number"},
+            {"key": "bill_num", "label": "Bill Number"},
+            {"key": "sales_date", "label": "Sales Date"},
+            {"key": "branch_name", "label": "Branch"},
+            {"key": "table_name", "label": "Table"},
+            {"key": "member_name", "label": "Member"},
+            {"key": "pax_total", "label": "Pax", "numeric": True},
+            {"key": "subtotal", "label": "Sub Total", "numeric": True},
+            {"key": "discount_total", "label": "Discount", "numeric": True},
+            {"key": "vat_total", "label": "VAT", "numeric": True},
+            {"key": "grand_total", "label": "Grand Total", "numeric": True},
+            {"key": "status_name", "label": "Status"},
         ],
     },
+    "goods-receipt-recap-report": {
+        "title": "Goods Receipt Recapitulation Report",
+        "title_id": "Laporan Rekapitulasi Penerimaan Barang",
+        "category": "inventory",
+        "tier": "T1",
+        "source": "table",
+        "table": "report_goods_receipt_recapitulation",
+        "date_col": "report_date",
+        "branch_col": "branch_name",
+        "order_col": "report_date",
+        "order_id_col": "id",
+        "description": "Goods receipt line items (ERP-identical recapitulation)",
+        "companies": [1],
+        # Column order matches the ERP sample export
+        "columns": [
+            {"key": "receipt_number", "label": "Goods Receipt Number"},
+            {"key": "receipt_date", "label": "Goods Receipt Date"},
+            {"key": "reference_number", "label": "Reference Number"},
+            {"key": "transaction_type", "label": "Transaction Type"},
+            {"key": "origin_name", "label": "Origin"},
+            {"key": "origin_location", "label": "Origin Location"},
+            {"key": "destination_name", "label": "Destination"},
+            {"key": "destination_location", "label": "Destination Location"},
+            {"key": "cost_center_name", "label": "Cost Center"},
+            {"key": "project_name", "label": "Project"},
+            {"key": "category_name", "label": "Category"},
+            {"key": "sub_category_name", "label": "Sub Category"},
+            {"key": "product_name", "label": "Product Name"},
+            {"key": "product_code", "label": "Product Code"},
+            {"key": "uom_name", "label": "Unit"},
+            {"key": "qty", "label": "Qty", "numeric": True},
+            {"key": "converted_qty", "label": "Converted Qty", "numeric": True},
+            {"key": "returned_qty", "label": "Returned Qty", "numeric": True},
+            {"key": "expired_date", "label": "Expired Date"},
+            {"key": "status_name", "label": "Status"},
+            {"key": "additional_info", "label": "Add. Information"},
+        ],
+    },
+    # ─────────────────────────────────────────────────────────────────────────────
+    # PRODUCT SALES REPORTS (T1) — recap line data is served by
+    # sales-recapitulation-detail-report; only actuation is separate here
+    # ─────────────────────────────────────────────────────────────────────────────
     "product-sales-actuation-report": {
         "title": "Product Sales Actuation Report",
         "title_id": "Laporan Aktuasi Penjualan Produk",
@@ -847,35 +892,9 @@ REPORTS: typing.Dict[str, dict] = {
         ],
     },
     # ─────────────────────────────────────────────────────────────────────────────
-    # ADDITIONAL INVENTORY REPORTS (T1)
+    # ADDITIONAL INVENTORY REPORTS (T1) — GR recap is served ERP-identically by
+    # goods-receipt-recap-report (esb_data.report_goods_receipt_recapitulation)
     # ─────────────────────────────────────────────────────────────────────────────
-    "goods-receipt-recapitulation-report": {
-        "title": "Goods Receipt Recapitulation Report",
-        "title_id": "Laporan Rekapitulasi Penerimaan Barang",
-        "category": "inventory",
-        "tier": "T1",
-        "source": "trx",
-        "entity": "GOODS_RECEIPT",
-        "description": "Goods receipt summary",
-        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
-        "columns": [
-            {"key": "goodsReceiptNum", "label": "GR Number"},
-            {"key": "goodsReceiptDate", "label": "GR Date"},
-            {"key": "purchaseOrderNum", "label": "PO Reference"},
-            {"key": "supplierName", "label": "Supplier"},
-            {"key": "branchName", "label": "Branch"},
-            {"key": "warehouseName", "label": "Warehouse"},
-            {"key": "productName", "label": "Product"},
-            {"key": "productCode", "label": "Product Code"},
-            {"key": "uomName", "label": "Unit"},
-            {"key": "qtyOrder", "label": "Qty Order", "numeric": True},
-            {"key": "qtyReceive", "label": "Qty Received", "numeric": True},
-            {"key": "qtyReject", "label": "Qty Rejected", "numeric": True},
-            {"key": "hpp", "label": "HPP", "numeric": True},
-            {"key": "totalReceive", "label": "Total Value", "numeric": True},
-            {"key": "statusName", "label": "Status"},
-        ],
-    },
     "goods-delivery-recapitulation-report": {
         "title": "Goods Delivery Recapitulation Report",
         "title_id": "Laporan Rekapitulasi Pengeluaran Barang",
@@ -1012,53 +1031,54 @@ REPORTS: typing.Dict[str, dict] = {
         "title_id": "Laporan Rekapitulasi Penjualan Detail",
         "category": "sales",
         "tier": "T1",
-        "source": "trx",
-        "entity": "PRODUCT_SALES",
-        "description": "Detail sales recapitulation by product and branch",
-        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
+        # ERP-identical line-level view: report_pos_sales JOIN report_pos_sales_head
+        "source": "table",
+        "table": "v_sales_recap_detail",
+        # view over report_pos_sales: catalog counts use the base table (much faster)
+        "count_table": "report_pos_sales",
+        "date_col": "sales_date",
+        "branch_col": "branch_name",
+        "order_col": "sales_date",
+        "order_id_col": None,
+        "description": "Sales Recapitulation Detail — line items joined with bill head (ERP column set)",
+        "companies": [1],
         "columns": [
-            {"key": "branchCode", "label": "Branch Code"},
-            {"key": "branchName", "label": "Branch Name"},
-            {"key": "salesDate", "label": "Sales Date"},
-            {"key": "productCode", "label": "Product Code"},
-            {"key": "productName", "label": "Product Name"},
-            {"key": "uomName", "label": "Unit"},
-            {"key": "qty", "label": "Quantity", "numeric": True},
+            {"key": "sales_num", "label": "Sales Number"},
+            {"key": "bill_num", "label": "Bill Number"},
+            {"key": "sales_type", "label": "Sales Type"},
+            {"key": "batch_order", "label": "Batch Order"},
+            {"key": "table_name", "label": "Table"},
+            {"key": "sales_date", "label": "Sales Date"},
+            {"key": "sales_date_in", "label": "Sales Date In"},
+            {"key": "sales_date_out", "label": "Sales Date Out"},
+            {"key": "branch_name", "label": "Branch"},
+            {"key": "visit_purpose_name", "label": "Visit Purpose"},
+            {"key": "regular_member_code", "label": "Member Code"},
+            {"key": "regular_member_name", "label": "Member Name"},
+            {"key": "payment_method", "label": "Payment Method"},
+            {"key": "menu_category_name", "label": "Menu Category"},
+            {"key": "menu_category_detail_name", "label": "Menu Category Detail"},
+            {"key": "menu_name", "label": "Menu"},
+            {"key": "menu_code", "label": "Menu Code"},
+            {"key": "menu_notes", "label": "Menu Notes"},
+            {"key": "order_mode", "label": "Order Mode"},
+            {"key": "qty", "label": "Qty", "numeric": True},
             {"key": "price", "label": "Price", "numeric": True},
-            {"key": "discountPercent", "label": "Discount %", "numeric": True},
-            {"key": "subTotal", "label": "Sub Total", "numeric": True},
-            {"key": "taxPercent", "label": "Tax %", "numeric": True},
+            {"key": "subtotal", "label": "Subtotal", "numeric": True},
+            {"key": "discount_value", "label": "Discount", "numeric": True},
+            {"key": "service_charge", "label": "Service Charge", "numeric": True},
+            {"key": "tax", "label": "Tax", "numeric": True},
+            {"key": "vat", "label": "VAT %", "numeric": True},
+            {"key": "vat_amount", "label": "VAT Amount", "numeric": True},
+            {"key": "other_tax_amount", "label": "Other Tax Amount", "numeric": True},
             {"key": "total", "label": "Total", "numeric": True},
-            {"key": "customerName", "label": "Customer Name"},
-            {"key": "salesNum", "label": "Sales Number"},
-        ],
-    },
-    "goods-receipt-recapitulation-detail-report": {
-        "title": "Goods Receipt Recapitulation Report",
-        "title_id": "Laporan Rekapitulasi Penerimaan Barang",
-        "category": "inventory",
-        "tier": "T2",
-        "source": "trx",
-        "entity": "GOODS_RECEIPT",
-        "description": "Goods receipt recapitulation by supplier and branch",
-        "companies": [1, 2, 3, 4, 5, 6, 7, 8],
-        "columns": [
-            {"key": "branchCode", "label": "Branch Code"},
-            {"key": "branchName", "label": "Branch Name"},
-            {"key": "goodsReceiptDate", "label": "GR Date"},
-            {"key": "goodsReceiptNum", "label": "GR Number"},
-            {"key": "purchaseOrderNum", "label": "PO Number"},
-            {"key": "supplierCode", "label": "Supplier Code"},
-            {"key": "supplierName", "label": "Supplier Name"},
-            {"key": "productCode", "label": "Product Code"},
-            {"key": "productName", "label": "Product Name"},
-            {"key": "uomName", "label": "Unit"},
-            {"key": "qtyOrder", "label": "Qty Order", "numeric": True},
-            {"key": "qtyReceive", "label": "Qty Received", "numeric": True},
-            {"key": "qtyReject", "label": "Qty Rejected", "numeric": True},
-            {"key": "hpp", "label": "HPP", "numeric": True},
-            {"key": "totalReceive", "label": "Total Value", "numeric": True},
-            {"key": "statusName", "label": "Status"},
+            {"key": "nett_sales", "label": "Nett Sales", "numeric": True},
+            {"key": "dpp", "label": "DPP", "numeric": True},
+            {"key": "bill_discount", "label": "Bill Discount", "numeric": True},
+            {"key": "total_after_bill_discount", "label": "Total After Bill Discount", "numeric": True},
+            {"key": "waiter", "label": "Waiter"},
+            {"key": "order_time", "label": "Order Time"},
+            {"key": "status_name", "label": "Status"},
         ],
     },
 }
@@ -2312,6 +2332,38 @@ def _rpt_rows(cur, company_id: int, report_key: str, entity: str,
     return rows
 
 
+def _table_rows(cur, spec: dict, company_id: int, branch_esb_id: typing.Optional[str],
+                date_from: date, date_to: date, limit: int, offset: int):
+    """Direct SQL query against an esb_data table (source="table").
+    Returns (rows, total). Uses keyset-friendly LIMIT/OFFSET in SQL."""
+    table = spec["table"]
+    date_col = spec.get("date_col", "sales_date")
+    sql = f"SELECT * FROM esb_data.{table} WHERE company_id = %s AND {date_col}::date BETWEEN %s AND %s"
+    params: typing.List[typing.Any] = [company_id, date_from, date_to]
+    if branch_esb_id and spec.get("branch_col"):
+        sql += f" AND {spec['branch_col']} = %s"
+        params.append(branch_esb_id)
+    cur.execute(f"SELECT COUNT(*) AS n FROM ({sql}) sub", params)
+    row = cur.fetchone()
+    total = row["n"] if isinstance(row, dict) else row[0]
+    order = spec.get("order_col", date_col)
+    if spec.get("order_id_col", "id"):
+        order += f", {spec['order_id_col']} DESC"
+    sql += f" ORDER BY {order} LIMIT %s OFFSET %s"
+    params.extend([limit, offset])
+    cur.execute(sql, params)
+    rows = []
+    for r in cur.fetchall():
+        d = dict(r) if not isinstance(r, dict) else r
+        d.pop("raw_data", None)
+        d.pop("id", None)
+        for k, v in list(d.items()):
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                d[k] = _num(v)
+        rows.append(d)
+    return rows, total
+
+
 def run_report(slug: str, company_id: int, branch_esb_id: typing.Optional[str],
                date_from: date, date_to: date, limit: int = 500, offset: int = 0):
     """Returns {title, columns, rows, total}. Full rows (pre-pagination) are
@@ -2322,6 +2374,10 @@ def run_report(slug: str, company_id: int, branch_esb_id: typing.Optional[str],
     conn = get_db_connection()
     cur = conn.cursor()
     try:
+        if spec["source"] == "table":
+            rows, total = _table_rows(cur, spec, company_id, branch_esb_id, date_from, date_to, limit, offset)
+            return {"slug": slug, "title": spec["title"], "columns": spec["columns"],
+                    "rows": rows, "total": total, "limit": limit, "offset": offset}
         if spec["source"] == "trx":
             entity = spec["entity"]
             fetcher = TRX_ROW_FETCHERS.get(entity)
@@ -2342,20 +2398,50 @@ def run_report(slug: str, company_id: int, branch_esb_id: typing.Optional[str],
 
 def iter_report_rows(slug: str, company_id: int, branch_esb_id: typing.Optional[str],
                      date_from: date, date_to: date):
-    """Unpaginated row iterator for exports."""
+    """Unpaginated row iterator for exports (count-free paged fetches)."""
     spec = REPORTS.get(slug)
     if not spec:
         raise ValueError(f"Unknown report: {slug}")
     conn = get_db_connection()
     cur = conn.cursor()
     try:
+        if spec["source"] == "table":
+            table = spec["table"]
+            date_col = spec.get("date_col", "sales_date")
+            sql = (f"SELECT * FROM esb_data.{table} WHERE company_id = %s "
+                   f"AND {date_col}::date BETWEEN %s AND %s")
+            params: typing.List[typing.Any] = [company_id, date_from, date_to]
+            if branch_esb_id and spec.get("branch_col"):
+                sql += f" AND {spec['branch_col']} = %s"
+                params.append(branch_esb_id)
+            order = spec.get("order_col", date_col)
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_schema='esb_data' "
+                "AND table_name=%s AND column_name='id'", (table,))
+            if cur.fetchone():
+                order += ", id"
+            sql += f" ORDER BY {order} LIMIT %s OFFSET %s"
+            page = 20000
+            offset = 0
+            while True:
+                cur.execute(sql, params + [page, offset])
+                rows = cur.fetchall()
+                for r in rows:
+                    d = dict(r) if not isinstance(r, dict) else r
+                    d.pop("raw_data", None)
+                    d.pop("id", None)
+                    for k, v in list(d.items()):
+                        if isinstance(v, (int, float)) and not isinstance(v, bool):
+                            d[k] = _num(v)
+                    yield d
+                if len(rows) < page:
+                    break
+                offset += page
+            return
         if spec["source"] == "trx":
             entity = spec["entity"]
             fetcher = TRX_ROW_FETCHERS.get(entity)
-            if fetcher:
-                rows = fetcher(cur, company_id, branch_esb_id, date_from, date_to)
-            else:
-                rows = []
+            rows = fetcher(cur, company_id, branch_esb_id, date_from, date_to) if fetcher else []
         else:
             rows = _rpt_rows(cur, company_id, slug, spec["entity"], branch_esb_id, date_from, date_to)
         for row in rows:
@@ -2387,6 +2473,79 @@ def list_reports_by_category() -> dict:
     return result
 
 
+_available_cache: dict = {}
+
+
+def available_reports(company_id: int = 1) -> dict:
+    """Catalog of ONLY reports that actually hold consumed data right now.
+
+    For each REPORTS spec we count real rows in its backing store
+    (esb_data table / trx_raw_staging / report_raw_staging) and drop
+    every report with zero rows, so the FE menu never shows empty or
+    aspirational entries. Lightly cached (60s) to spare the DB.
+    """
+    import time as _time
+    now = _time.time()
+    cached = _available_cache.get(company_id)
+    if cached and now - cached["ts"] < 60:
+        return cached["data"]
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    out = []
+    try:
+        for slug, spec in REPORTS.items():
+            if company_id not in (spec.get("companies") or [company_id]):
+                continue
+            try:
+                if spec.get("source") == "table":
+                    count_table = spec.get("count_table") or spec["table"]
+                    cur.execute(
+                        f"SELECT COUNT(*) AS n, MIN({spec['date_col']}::date)::text AS mn, "
+                        f"MAX({spec['date_col']}::date)::text AS mx "
+                        f"FROM esb_data.{count_table} WHERE company_id = %s", (company_id,))
+                elif spec.get("source") == "trx":
+                    cur.execute(
+                        "SELECT COUNT(*) AS n, MIN(doc_date)::text AS mn, MAX(doc_date)::text AS mx "
+                        "FROM trx_raw_staging WHERE company_id = %s AND entity_type = %s",
+                        (company_id, spec["entity"]))
+                else:
+                    cur.execute(
+                        "SELECT COUNT(*) AS n, MIN(period_start)::text AS mn, MAX(period_start)::text AS mx "
+                        "FROM report_raw_staging WHERE company_id = %s AND report_type = %s",
+                        (company_id, spec["entity"]))
+                r = cur.fetchone()
+                rows = r["n"] or 0
+            except Exception:
+                conn.rollback()
+                continue
+            if rows <= 0:
+                continue
+            out.append({
+                "slug": slug,
+                "title": spec.get("title", slug),
+                "category": spec.get("category", "other"),
+                "tier": spec.get("tier", "T1"),
+                "source": spec.get("source", "staging"),
+                "rows": rows,
+                "date_from": r["mn"],
+                "date_to": r["mx"],
+                "columns": len(spec.get("columns", [])),
+            })
+        out.sort(key=lambda x: (-x["rows"], x["title"]))
+        data = {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "company_id": company_id,
+            "reports": out,
+            "total_rows": sum(d["rows"] for d in out),
+        }
+        _available_cache[company_id] = {"ts": now, "data": data}
+        return data
+    finally:
+        cur.close()
+        conn.close()
+
+
 def list_reports_by_tier() -> dict:
     """Group all reports by their tier (T1 = direct trx, T2 = aggregated)."""
     result = {"T1": [], "T2": []}
@@ -2412,3 +2571,939 @@ def get_report_metadata(slug: str) -> typing.Optional[dict]:
         **spec,
         "category_info": REPORT_CATEGORIES.get(cat, {}),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# esb_data.report_* sync (structured tables, Sprint: dynamic restructure)
+# ─────────────────────────────────────────────────────────────────────────
+
+import os
+import math
+import time
+import httpx
+from datetime import datetime, timedelta, timezone
+
+from app.core.worker import celery_app
+
+ESB_API_BASE_URL = os.getenv("ESB_CORE_URL", "https://services.esb.co.id/core")
+ESB_FALLBACK_USERNAME = os.getenv("ESB_CORE_USERNAME", "CALFSUPERADMINOPS")
+ESB_FALLBACK_PASSWORD = os.getenv("ESB_CORE_PASSWORD", "")
+PAGE_SIZE = 100
+PAGE_SLEEP_SECONDS = 0.2
+
+# entity -> sync config for esb_data.report_* tables
+REPORT_SYNC_CONFIG = {
+    "RPT_GOODS_RECEIPT_RECAPITULATION": {
+        "path": "/report/goods-receipt-recapitulation",
+        "params_for": lambda d: {"dateFrom": d.isoformat(), "dateTo": d.isoformat()},
+        "params_for_range": lambda s, e: {"dateFrom": s.isoformat(), "dateTo": e.isoformat()},
+        "window_days": 2,
+        "mode": "goods_receipt",
+    },
+    "RPT_SALES_PAYMENT_SUMMARY": {
+        "path": "/report/sales-payment-summary",
+        "params_for": lambda d: {"salesDate": d.isoformat()},
+        "window_days": 2,
+        "mode": "sales_payment",
+    },
+    "RPT_STOCK_MOVEMENT": {
+        "path": "/report/stock-movement",
+        "params_for": lambda d: {"startPeriod": d.isoformat(), "endPeriod": d.isoformat()},
+        "window_days": 7,
+        "mode": "stock_movement",
+    },
+    "RPT_SALES_RECAPITULATION_DETAIL": {
+        "path": "/sales/product-sales",
+        "params_for": lambda d: {"salesDate": d.isoformat()},
+        "window_days": 2,
+        "mode": "product_sales",
+    },
+}
+
+
+def _report_iter_rows(client, cfg: dict, d: date):
+    """Yield rows of a direct report for one date bucket (envelope-paginated)."""
+    page = 1
+    total_pages = 1
+    while page <= total_pages:
+        params = {"page": page, "limit": PAGE_SIZE}
+        params.update(cfg["params_for"](d))
+        body = client.get(cfg["path"], params=params)
+        result = body.get("result")
+        if isinstance(result, dict):
+            rows = result.get("data") or []
+            count = result.get("count", 0)
+            total_pages = max(1, math.ceil((count or len(rows)) / PAGE_SIZE))
+        else:
+            rows = result or []
+            total_pages = 1
+        for r in rows:
+            yield r
+        page += 1
+        time.sleep(PAGE_SLEEP_SECONDS)
+
+
+def _resolve_branch_esb_id(cur, company_id: int, branch_name: typing.Optional[str]) -> typing.Optional[str]:
+    if not branch_name:
+        return None
+    cur.execute(
+        "SELECT esb_id FROM esb_data.master_branch WHERE company_id = %s AND name ILIKE %s LIMIT 1",
+        (company_id, branch_name),
+    )
+    row = cur.fetchone()
+    return row["esb_id"] if row else (branch_name[:50] if branch_name else None)
+
+
+def _safe_date(v):
+    """ESB sometimes returns dirty dates like '08-23-2026 (1,7900)'; keep only
+    the leading parseable YYYY-MM-DD or MM-DD-YYYY portion, else None."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})", s)
+    if m:
+        return m.group(1)
+    m = re.match(r"^(\d{2})-(\d{2})-(\d{4})", s)
+    if m:
+        return f"{m.group(3)}-{m.group(1)}-{m.group(2)}"
+    return None
+
+
+def _sync_goods_receipt(cur, conn, company_id: int, d: date, rows: list) -> int:
+    """Upsert line-level GR rows (one row per product line, matches ERP export)."""
+    written = 0
+    for r in rows:
+        rd = r.get("goodsReceiptDate")
+        num = r.get("goodsReceiptNum")
+        if not (rd and num):
+            continue
+        cur.execute("""
+            INSERT INTO esb_data.report_goods_receipt_recapitulation
+            (company_id, report_date, receipt_number, receipt_date, reference_number,
+             transaction_type, origin_name, origin_location, destination_name,
+             destination_location, cost_center_name, project_name, category_name,
+             sub_category_name, product_name, product_code, uom_name, qty,
+             converted_qty, returned_qty, expired_date, status_name, additional_info,
+             branch_name, raw_data, synced_at, updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+            ON CONFLICT (company_id, report_date, receipt_number, product_code, sub_category_name) DO UPDATE SET
+                qty = EXCLUDED.qty, converted_qty = EXCLUDED.converted_qty,
+                returned_qty = EXCLUDED.returned_qty, status_name = EXCLUDED.status_name,
+                additional_info = EXCLUDED.additional_info, raw_data = EXCLUDED.raw_data,
+                updated_at = NOW()
+        """, (
+            company_id, rd, num, rd, r.get("refNum"),
+            r.get("transType"), r.get("originName"), r.get("originLocation"),
+            r.get("branchName"), r.get("destinationLocation"), r.get("costCenterName"),
+            r.get("projectName"), r.get("categoryName"), r.get("subCategoryName"),
+            r.get("productName"), r.get("productCode"), r.get("uomName"),
+            r.get("qty") or 0, r.get("convertedQty") or 0, r.get("returnedQty") or 0,
+            _safe_date(r.get("expiredDate")), r.get("statusName"), r.get("additionalInfo"),
+            r.get("branchName"), json.dumps(r, default=str),
+        ))
+        written += 1
+    conn.commit()
+    return written
+
+
+def _sync_sales_payment(cur, conn, company_id: int, d: date, rows: list) -> int:
+    """Flatten per-branch rows with nested payments[] into payment-method rows."""
+    written = 0
+    for r in rows:
+        rd = r.get("salesDate") or d.isoformat()
+        branch_esb_id = r.get("branchCode")
+        branch_name = r.get("branchName")
+        # replace-existing semantics keeps re-runs idempotent (table has no unique key)
+        cur.execute(
+            "DELETE FROM esb_data.report_sales_payment_summary WHERE company_id = %s AND report_date = %s AND branch_esb_id = %s",
+            (company_id, rd, branch_esb_id),
+        )
+        for p in r.get("payments") or []:
+            cur.execute("""
+                INSERT INTO esb_data.report_sales_payment_summary
+                (company_id, report_date, branch_esb_id, branch_name, payment_method_type,
+                 payment_method_name, transaction_type, payment_count, payment_amount, mdr,
+                 net_after_mdr, raw_data, synced_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, NOW(), NOW())
+            """, (
+                company_id, rd, branch_esb_id, branch_name,
+                p.get("paymentMethodTypeName"), p.get("paymentMethodName"),
+                p.get("paymentCount") or 0, p.get("paymentAmount") or 0,
+                p.get("mdr") or 0, p.get("netAfterMDR") or 0,
+                json.dumps(p, default=str),
+            ))
+            written += 1
+    conn.commit()
+    return written
+
+
+def _sync_stock_movement(cur, conn, company_id: int, d: date, rows: list) -> int:
+    """Insert line-level stock movement rows (replace per company+date+product)."""
+    written = 0
+    for r in rows:
+        rd = r.get("documentDate") or d.isoformat()
+        cur.execute("""
+            INSERT INTO esb_data.report_stock_movement
+            (company_id, report_date, branch_esb_id, product_code, product_name, branch_name,
+             location, uom_name, transaction_type, reference_number, document_code, document_date,
+             value_per_unit, qty_in, amount_in, qty_out, amount_out, qty_balance, amount_balance,
+             raw_data, synced_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        """, (
+            company_id, rd, str(r.get("branchID") or r.get("branchCode") or ""),
+            r.get("productCode"), r.get("productName"), r.get("branchName"),
+            r.get("location"), r.get("uomName"), r.get("transactionType"),
+            r.get("referenceNumber"), r.get("documentCode"), rd,
+            r.get("valuePerUnit") or 0, r.get("qtyIn") or 0, r.get("amountIn") or 0,
+            r.get("qtyOut") or 0, r.get("amountOut") or 0, r.get("qtyBalance") or 0,
+            r.get("amountBalance") or 0, json.dumps(r, default=str),
+        ))
+        written += 1
+    conn.commit()
+    return written
+
+
+def _sync_product_sales(cur, conn, company_id: int, d: date, rows: list) -> int:
+    """Upsert product-sales transaction headers into report_sales_recapitulation_detail."""
+    written = 0
+    for r in rows:
+        rd = r.get("productSalesDate")
+        if not (rd and r.get("productSalesNum")):
+            continue
+        cur.execute("""
+            INSERT INTO esb_data.report_sales_recapitulation_detail
+            (company_id, report_date, branch_esb_id, transaction_number, transaction_date,
+             branch_name, customer_name, customer_code, salesperson_name, total_amount,
+             item_count, status, status_name, order_type, notes, created_by, approved_by,
+             approved_date, raw_data, synced_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            ON CONFLICT (company_id, report_date, branch_esb_id, transaction_number) DO UPDATE SET
+                branch_name = EXCLUDED.branch_name,
+                customer_name = EXCLUDED.customer_name,
+                salesperson_name = EXCLUDED.salesperson_name,
+                total_amount = EXCLUDED.total_amount,
+                item_count = EXCLUDED.item_count,
+                status = EXCLUDED.status,
+                status_name = EXCLUDED.status_name,
+                order_type = EXCLUDED.order_type,
+                raw_data = EXCLUDED.raw_data,
+                updated_at = NOW()
+        """, (
+            company_id, rd, str(r.get("branchID") or ""),
+            r["productSalesNum"], rd, r.get("branchName"),
+            r.get("customerName"), str(r.get("customerID") or ""),
+            r.get("salesRepName"), r.get("productSalesTotal") or 0,
+            len(r.get("productSalesDetails") or []),
+            str(r.get("statusID") or ""), r.get("printData", {}).get("statusName") if isinstance(r.get("printData"), dict) else None,
+            r.get("productSalesTypeName"), r.get("additionalInfo"),
+            r.get("createdBy"), r.get("authorizedBy"), r.get("authorizedDate"),
+            json.dumps(r, default=str),
+        ))
+        written += 1
+    conn.commit()
+    return written
+
+
+_SYNC_MODES = {
+    "goods_receipt": _sync_goods_receipt,
+    "sales_payment": _sync_sales_payment,
+    "stock_movement": _sync_stock_movement,
+    "product_sales": _sync_product_sales,
+}
+
+
+@celery_app.task(name="app.services.reports.sync_sales_recap_detail")
+def sync_sales_recap_detail(company_id: int = None):
+    """Transform staged PRODUCT_SALES payloads (trx_raw_staging) into the
+    structured esb_data.report_sales_recapitulation_detail table.
+
+    Idempotent: upserts on (company_id, report_date, branch_esb_id, transaction_number).
+    This avoids re-pulling slow ESB endpoints for data already staged by the TRX lane.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT COUNT(*) FROM public.trx_raw_staging WHERE entity_type = 'PRODUCT_SALES'")
+        staged = cur.fetchone()["count"]
+        cur.execute("""
+            INSERT INTO esb_data.report_sales_recapitulation_detail
+            (company_id, report_date, branch_esb_id, transaction_number, transaction_date,
+             branch_name, customer_name, customer_code, salesperson_name, total_amount,
+             item_count, status, status_name, order_type, notes, created_by, approved_by,
+             approved_date, raw_data, synced_at, updated_at)
+            SELECT
+                s.company_id,
+                (s.payload->>'productSalesDate')::date,
+                (s.payload->>'branchID')::text,
+                s.payload->>'productSalesNum',
+                (s.payload->>'productSalesDate')::date,
+                s.payload->>'branchName',
+                s.payload->>'customerName',
+                (s.payload->>'customerID')::text,
+                s.payload->>'salesRepName',
+                COALESCE((s.payload->>'productSalesTotal')::numeric, 0),
+                COALESCE(jsonb_array_length(s.payload->'productSalesDetails'), 0),
+                (s.payload->>'statusID')::text,
+                s.payload->'printData'->>'statusName',
+                s.payload->>'productSalesTypeName',
+                s.payload->>'additionalInfo',
+                s.payload->>'createdBy',
+                s.payload->>'authorizedBy',
+                (s.payload->>'authorizedDate')::date,
+                s.payload,
+                s.synced_at,
+                NOW()
+            FROM public.trx_raw_staging s
+            WHERE s.entity_type = 'PRODUCT_SALES'
+              AND (s.company_id = %s OR %s IS NULL)
+            ON CONFLICT (company_id, report_date, branch_esb_id, transaction_number) DO UPDATE SET
+                branch_name = EXCLUDED.branch_name,
+                customer_name = EXCLUDED.customer_name,
+                salesperson_name = EXCLUDED.salesperson_name,
+                total_amount = EXCLUDED.total_amount,
+                item_count = EXCLUDED.item_count,
+                status = EXCLUDED.status,
+                status_name = EXCLUDED.status_name,
+                order_type = EXCLUDED.order_type,
+                raw_data = EXCLUDED.raw_data,
+                updated_at = NOW()
+        """, (company_id, company_id))
+        written = cur.rowcount
+        conn.commit()
+        return {"staged": staged, "upserted": written}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@celery_app.task(name="app.services.reports.sync_report")
+def sync_report(report_type: str, company_id: int, date_from: str = None,
+                date_to: str = None, branch_esb_id: str = None, static_token: str = None):
+    """Pull a direct report from ESB into the structured esb_data.report_* table.
+
+    report_type is an endpoint_registry entity (e.g. RPT_GOODS_RECEIPT_RECAPITULATION).
+    Default window is the entity's configured trailing window ending today.
+    """
+    cfg = REPORT_SYNC_CONFIG.get(report_type)
+    if not cfg:
+        return f"No sync config for {report_type}"
+    writer = _SYNC_MODES[cfg["mode"]]
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id, esb_company_code, esb_username, esb_password, static_token FROM esb_data.company_configs WHERE id = %s",
+            (company_id,))
+        co = cur.fetchone()
+        if not co:
+            return f"Company {company_id} not found"
+        code = co["esb_company_code"]
+        username = co["esb_username"] or ESB_FALLBACK_USERNAME
+        password = co["esb_password"] or ESB_FALLBACK_PASSWORD
+        token = static_token or co["static_token"]
+        if token:
+            print(f"Using static token for {code}")
+        else:
+            if not (username and password):
+                return f"{code}: no credentials"
+            try:
+                from app.services.trx_engine import _auth_locked_company_token
+                token = _auth_locked_company_token(code, username, password)
+            except Exception as e:
+                return f"{code}: auth failed {str(e)[:120]}"
+
+        from app.services.tasks import ESBClient
+        client = ESBClient(token, code, username, password)
+
+        cur.execute(
+            "INSERT INTO sync_history (entity_type, status, company_id) VALUES (%s, %s, %s) RETURNING id",
+            (report_type, "STARTED", company_id))
+        history_id = cur.fetchone()["id"]
+        conn.commit()
+
+        end_d = date.fromisoformat(date_to) if date_to else date.today()
+        start_d = date.fromisoformat(date_from) if date_from else end_d - timedelta(days=cfg["window_days"])
+        pulled, written, has_error, err = 0, 0, False, ""
+
+        if "params_for_range" in cfg:
+            # Single paginated pull over the whole range (backfill-friendly),
+            # written and committed incrementally per page so a dropped DB
+            # connection cannot lose the whole chunk.
+            page, total_pages = 1, 1
+            try:
+                while page <= total_pages:
+                    params = {"page": page, "limit": PAGE_SIZE}
+                    params.update(cfg["params_for_range"](start_d, end_d))
+                    body = client.get(cfg["path"], params=params)
+                    result = body.get("result")
+                    if isinstance(result, dict):
+                        batch = result.get("data") or []
+                        count = result.get("count", 0)
+                        total_pages = max(1, math.ceil((count or len(batch)) / PAGE_SIZE))
+                    else:
+                        batch = result or []
+                        total_pages = 1
+                    pulled += len(batch)
+                    try:
+                        written += writer(cur, conn, company_id, end_d, batch)
+                    except Exception:
+                        conn.rollback()
+                        raise
+                    page += 1
+                    time.sleep(PAGE_SLEEP_SECONDS)
+            except Exception as e:
+                has_error, err = True, str(e)[:200]
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+        else:
+            d = start_d
+            while d <= end_d:
+                try:
+                    rows = list(_report_iter_rows(client, cfg, d))
+                except Exception as e:
+                    has_error, err = True, str(e)[:200]
+                    break
+                pulled += len(rows)
+                written += writer(cur, conn, company_id, d, rows)
+                d += timedelta(days=1)
+
+        cur.execute(
+            "UPDATE sync_history SET status=%s, records_processed=%s, error_message=%s, completed_at=%s WHERE id=%s",
+            ("FAILED" if has_error else "SUCCESS", written, err, datetime.now(timezone.utc), history_id))
+        conn.commit()
+        return {code: {report_type: written if not has_error else f"ERROR {err}"}}
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# POS sales sync via ESB OMS gateway (esbcore.co.id, Basic auth)
+# Source of the ERP "Sales Recapitulation Detail Report" (line-level POS)
+# ─────────────────────────────────────────────────────────────────────────
+
+OMS_BASE_URL = os.getenv("OMS_API_URL", "https://esbcore.co.id")
+OMS_USERNAME = os.getenv("OMS_API_USERNAME", ESB_FALLBACK_USERNAME)
+OMS_PASSWORD = os.getenv("OMS_API_PASSWORD", ESB_FALLBACK_PASSWORD)
+OMS_PAGE_SIZE = 50  # server caps per-page at 50 (asking 100 silently returns 50)
+
+
+class OMSClient:
+    """Client for the OMS external/general endpoints (Basic auth, header pagination)."""
+
+    def __init__(self, username: str, password: str):
+        import base64
+        cred = base64.b64encode(f"{username}:{password}".encode()).decode()
+        self._http = httpx.Client(
+            timeout=60.0,
+            headers={"Authorization": f"Basic {cred}", "Content-Type": "application/json",
+                     "Accept": "application/json"},
+        )
+
+    def post(self, path: str, body: dict, page: int = 1):
+        last_exc = None
+        for attempt in range(7):
+            try:
+                r = self._http.post(f"{OMS_BASE_URL}{path}",
+                                    params={"page": page, "per-page": OMS_PAGE_SIZE}, json=body)
+                if r.status_code == 401:
+                    # OMS throttles concurrent load from one account with 401s;
+                    # back off and retry before giving up
+                    time.sleep(min(120, 15 * (attempt + 1)))
+                    continue
+                if r.status_code >= 400:
+                    raise RuntimeError(f"OMS error {r.status_code}: {r.text[:150]}")
+                rows = r.json() if r.text.strip() else []
+                total_pages = int(r.headers.get("x-pagination-page-count", 1) or 1)
+                return rows, total_pages
+            except RuntimeError:
+                raise
+            except Exception as e:
+                last_exc = e
+                time.sleep(2 * (attempt + 1))
+        raise RuntimeError(f"OMS unauthorized: check OMS_API_USERNAME/OMS_API_PASSWORD (needs External API access) after retries: {str(last_exc)[:120]}")
+
+    def iter_all(self, path: str, body: dict):
+        page, total_pages = 1, 1
+        while page <= total_pages:
+            rows, total_pages = self.post(path, body, page)
+            for r in rows:
+                yield r
+            page += 1
+            time.sleep(PAGE_SLEEP_SECONDS)
+
+
+def _oms_body(date_from: str, date_to: str) -> dict:
+    return {"filterSalesDateFrom": date_from, "filterSalesDateTo": date_to}
+
+
+def _upsert_pos_head(cur, company_id: int, r: dict):
+    cur.execute("""
+        INSERT INTO esb_data.report_pos_sales_head
+        (company_id, sales_num, parent_link_sales_num, bill_num, sales_date, sales_date_in,
+         sales_date_out, branch_code, branch_name, member_code, member_name, table_name,
+         visit_purpose_name, pax_total, subtotal, discount_total, menu_discount_total,
+         promotion_discount, other_tax_total, vat_total, grand_total, voucher_total,
+         rounding_total, payment_total, status_id, status_name, created_by, payments,
+         raw_data, synced_at, updated_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+        ON CONFLICT (company_id, sales_num) DO UPDATE SET
+            grand_total = EXCLUDED.grand_total, payment_total = EXCLUDED.payment_total,
+            status_id = EXCLUDED.status_id, status_name = EXCLUDED.status_name,
+            payments = EXCLUDED.payments, raw_data = EXCLUDED.raw_data, updated_at = NOW()
+    """, (
+        company_id, r.get("salesNum"), r.get("parentLinkSalesNum"), r.get("billNum"),
+        r.get("salesDate"), r.get("salesDateIn"), r.get("salesDateOut"),
+        r.get("branchCode"), r.get("branchName"), r.get("memberCode"), r.get("memberName"),
+        r.get("tableName"), r.get("visitPurposeName"), r.get("paxTotal"),
+        r.get("subtotal") or 0, r.get("discountTotal") or 0, r.get("menuDiscountTotal") or 0,
+        r.get("promotionDiscount") or 0, r.get("otherTaxTotal") or 0, r.get("vatTotal") or 0,
+        r.get("grandTotal") or 0, r.get("voucherTotal") or 0, r.get("roundingTotal") or 0,
+        r.get("paymentTotal") or 0, r.get("statusID"), r.get("statusName"),
+        r.get("createdBy"), json.dumps(r.get("salesPayments") or [], default=str),
+        json.dumps(r, default=str),
+    ))
+
+
+def _insert_pos_sales_line(cur, company_id: int, r: dict):
+    """Upsert a single POS sales line — NO delete, safe for partial API failures."""
+    cur.execute("""
+        INSERT INTO esb_data.report_pos_sales
+        (company_id, sales_num, bill_num, sales_date, branch_code, branch_name, batch_id,
+         menu_code, menu_name, menu_category_name, menu_category_detail_name, qty, price,
+         original_price, discount, discount_value, subtotal, other_tax, service_charge,
+         tax, vat, total, notes, cancel_notes, status_id, status_name, created_by,
+         created_date, extras, raw_data, synced_at, updated_at, id_esb)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW(),%s)
+        ON CONFLICT (company_id, sales_num, menu_code, menu_category_detail_name, id_esb)
+        DO UPDATE SET synced_at = NOW(), updated_at = NOW()
+    """, (
+        company_id, r.get("salesNum"), r.get("billNum"), r.get("salesDate"),
+        r.get("branchCode"), r.get("branchName"), r.get("batchID"),
+        r.get("menuCode"), r.get("menuName"), r.get("menuCategoryName"),
+        r.get("menuCategoryDetailName"), r.get("qty") or 0, r.get("price") or 0,
+        r.get("originalPrice") or 0, r.get("discount") or 0, r.get("discountValue") or 0,
+        r.get("subTotal") or 0, r.get("otherTax") or 0, r.get("serviceCharge") or 0,
+        r.get("tax") or 0, r.get("vat") or 0, r.get("total") or 0,
+        r.get("notes"), r.get("cancelNotes"), r.get("statusID"), r.get("statusName"),
+        r.get("createdBy"), r.get("createdDate"),
+        json.dumps(r.get("extras") or [], default=str), json.dumps(r, default=str),
+        r.get("ID") or r.get("id"),
+    ))
+
+
+def _insert_pos_package_line(cur, company_id: int, parent: dict, p: dict):
+    """Explode a menu-line package/modifier into its own row, mirroring the ERP
+    'Sales Recapitulation Detail Report' EXTRA lines ('<Menu> (PACKAGE)').
+    Uses UPSERT — no delete, safe for partial API failures."""
+    raw = {**p,
+           "salesNum": parent.get("salesNum"), "billNum": parent.get("billNum"),
+           "salesDate": parent.get("salesDate"), "salesType": parent.get("salesType"),
+           "branchCode": parent.get("branchCode"), "branchName": parent.get("branchName"),
+           "createdDate": parent.get("createdDate")}
+    qty = p.get("qty") or 0
+    price = p.get("price") or 0
+    cur.execute("""
+        INSERT INTO esb_data.report_pos_sales
+        (company_id, sales_num, bill_num, sales_date, branch_code, branch_name, batch_id,
+         menu_code, menu_name, menu_category_name, menu_category_detail_name, qty, price,
+         original_price, discount, discount_value, subtotal, other_tax, service_charge,
+         tax, vat, total, notes, cancel_notes, status_id, status_name, created_by,
+         created_date, extras, raw_data, synced_at, updated_at, id_esb)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'EXTRA',NULL,%s,%s,%s,%s,0,%s,%s,0,0,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW(),NULL)
+        ON CONFLICT (company_id, sales_num, menu_code, menu_category_detail_name, id_esb)
+        DO UPDATE SET synced_at = NOW(), updated_at = NOW()
+    """, (
+        company_id, parent.get("salesNum"), parent.get("billNum"), parent.get("salesDate"),
+        parent.get("branchCode"), parent.get("branchName"), parent.get("batchID"),
+        p.get("menuCode") or "", f"{p.get('menuName') or ''} (PACKAGE)",
+        qty, price, p.get("originalPrice") or 0, p.get("discount") or 0,
+        (price * qty) if (price and qty) else 0,
+        p.get("otherTax") or 0, p.get("vat") or 0, p.get("total") or 0,
+        p.get("notes"), None, p.get("statusID"), p.get("statusName"),
+        parent.get("createdBy"), parent.get("createdDate"),
+        "[]", json.dumps(raw, default=str),
+    ))
+
+
+def _flush_batch(cur, sql: str, tuples: list):
+    """One round-trip multi-row INSERT via execute_values (page-sized batches)."""
+    if not tuples:
+        return
+    from psycopg2.extras import execute_values
+    execute_values(cur, sql, tuples, page_size=200)
+
+
+def _head_tuple(company_id: int, r: dict) -> tuple:
+    return (
+        company_id, r.get("salesNum"), r.get("parentLinkSalesNum"), r.get("billNum"),
+        r.get("salesDate"), r.get("salesDateIn"), r.get("salesDateOut"),
+        r.get("branchCode"), r.get("branchName"), r.get("memberCode"), r.get("memberName"),
+        r.get("tableName"), r.get("visitPurposeName"), r.get("paxTotal"),
+        r.get("subtotal") or 0, r.get("discountTotal") or 0, r.get("menuDiscountTotal") or 0,
+        r.get("promotionDiscount") or 0, r.get("otherTaxTotal") or 0, r.get("vatTotal") or 0,
+        r.get("grandTotal") or 0, r.get("voucherTotal") or 0, r.get("roundingTotal") or 0,
+        r.get("paymentTotal") or 0, r.get("statusID"), r.get("statusName"),
+        r.get("createdBy"), json.dumps(r.get("salesPayments") or [], default=str),
+        json.dumps(r, default=str),
+    )
+
+
+def _line_tuple(company_id: int, r: dict) -> tuple:
+    return (
+        company_id, r.get("salesNum"), r.get("billNum"), r.get("salesDate"),
+        r.get("branchCode"), r.get("branchName"), r.get("batchID"),
+        r.get("menuCode"), r.get("menuName"), r.get("menuCategoryName"),
+        r.get("menuCategoryDetailName"), r.get("qty") or 0, r.get("price") or 0,
+        r.get("originalPrice") or 0, r.get("discount") or 0, r.get("discountValue") or 0,
+        r.get("subTotal") or 0, r.get("otherTax") or 0, r.get("serviceCharge") or 0,
+        r.get("tax") or 0, r.get("vat") or 0, r.get("total") or 0,
+        r.get("notes"), r.get("cancelNotes"), r.get("statusID"), r.get("statusName"),
+        r.get("createdBy"), r.get("createdDate"),
+        json.dumps(r.get("extras") or [], default=str), json.dumps(r, default=str),
+        r.get("ID") or r.get("id"),
+    )
+
+
+def _package_tuple(company_id: int, parent: dict, p: dict) -> tuple:
+    qty = p.get("qty") or 0
+    price = p.get("price") or 0
+    raw = {**p,
+           "salesNum": parent.get("salesNum"), "billNum": parent.get("billNum"),
+           "salesDate": parent.get("salesDate"), "salesType": parent.get("salesType"),
+           "branchCode": parent.get("branchCode"), "branchName": parent.get("branchName"),
+           "createdDate": parent.get("createdDate")}
+    return (
+        company_id, parent.get("salesNum"), parent.get("billNum"), parent.get("salesDate"),
+        parent.get("branchCode"), parent.get("branchName"), parent.get("batchID"),
+        p.get("menuCode") or "", f"{p.get('menuName') or ''} (PACKAGE)",
+        qty, price, p.get("originalPrice") or 0, p.get("discount") or 0,
+        (price * qty) if (price and qty) else 0,
+        p.get("otherTax") or 0, p.get("vat") or 0, p.get("total") or 0,
+        p.get("notes"), None, p.get("statusID"), p.get("statusName"),
+        parent.get("createdBy"), parent.get("createdDate"),
+        "[]", json.dumps(raw, default=str),
+    )
+
+
+HEAD_BATCH_SQL = """
+    INSERT INTO esb_data.report_pos_sales_head
+    (company_id, sales_num, parent_link_sales_num, bill_num, sales_date, sales_date_in,
+     sales_date_out, branch_code, branch_name, member_code, member_name, table_name,
+     visit_purpose_name, pax_total, subtotal, discount_total, menu_discount_total,
+     promotion_discount, other_tax_total, vat_total, grand_total, voucher_total,
+     rounding_total, payment_total, status_id, status_name, created_by, payments,
+     raw_data, synced_at, updated_at)
+    VALUES %s
+    ON CONFLICT (company_id, sales_num) DO UPDATE SET
+     grand_total=EXCLUDED.grand_total, payment_total=EXCLUDED.payment_total,
+     status_id=EXCLUDED.status_id, status_name=EXCLUDED.status_name,
+     payments=EXCLUDED.payments, raw_data=EXCLUDED.raw_data, updated_at=NOW()
+"""
+
+LINE_BATCH_SQL = """
+    INSERT INTO esb_data.report_pos_sales
+    (company_id, sales_num, bill_num, sales_date, branch_code, branch_name, batch_id,
+     menu_code, menu_name, menu_category_name, menu_category_detail_name, qty, price,
+     original_price, discount, discount_value, subtotal, other_tax, service_charge,
+     tax, vat, total, notes, cancel_notes, status_id, status_name, created_by,
+     created_date, extras, raw_data, synced_at, updated_at, id_esb)
+    VALUES %s
+    ON CONFLICT (company_id, sales_num, menu_code, menu_category_detail_name, id_esb)
+    DO UPDATE SET synced_at = NOW(), updated_at = NOW()
+"""
+
+PKG_BATCH_SQL = """
+    INSERT INTO esb_data.report_pos_sales
+    (company_id, sales_num, bill_num, sales_date, branch_code, branch_name, batch_id,
+     menu_code, menu_name, menu_category_name, menu_category_detail_name, qty, price,
+     original_price, discount, discount_value, subtotal, other_tax, service_charge,
+     tax, vat, total, notes, cancel_notes, status_id, status_name, created_by,
+     created_date, extras, raw_data, synced_at, updated_at, id_esb)
+    VALUES %s
+    ON CONFLICT (company_id, sales_num, menu_code, menu_category_detail_name, id_esb)
+    DO UPDATE SET synced_at = NOW(), updated_at = NOW()
+"""
+
+
+@celery_app.task(name="app.services.reports.sync_pos_sales")
+def sync_pos_sales(company_id: int, date_from: str = None, date_to: str = None):
+    """Pull POS sales (head + menu lines) from the OMS gateway for a date range
+    into esb_data.report_pos_sales_head / report_pos_sales (line-level, matches
+    the ERP 'Sales Recapitulation Detail Report' export).
+
+    Uses UPSERT (ON CONFLICT DO UPDATE) instead of DELETE + INSERT.
+    This means:
+    - Existing rows are never deleted during sync (no data loss)
+    - Re-runs of the same day are safe and idempotent
+    - API failures mid-day do NOT cause data loss — rows stay intact
+    - Completeness audit: after each day, verify API head count matches DB count
+      and trigger a retry if mismatched (up to 3 audit retries per day)
+
+    Each package/modifier is exploded into its own 'EXTRA' row
+    ('<Menu> (PACKAGE)') exactly like the ERP export."""
+    lock_key = f"sync_pos_sales:{company_id}:{date_from}:{date_to}"
+    lock_conn = get_db_connection()
+    try:
+        lock_cur = lock_conn.cursor()
+        lock_cur.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (lock_key,))
+        if not lock_cur.fetchone()["pg_try_advisory_lock"]:
+            return f"skipped: another sync_pos_sales for {lock_key} is running"
+    except Exception:
+        lock_conn.close()
+        raise
+
+    conn = lock_conn
+    cur = conn.cursor()
+    history_id = None
+    try:
+        client = OMSClient(OMS_USERNAME, OMS_PASSWORD)
+
+        cur.execute(
+            "INSERT INTO sync_history (entity_type, status, company_id) VALUES (%s, %s, %s) RETURNING id",
+            ("POS_SALES", "STARTED", company_id))
+        history_id = cur.fetchone()["id"]
+        conn.commit()
+
+        end_d = date.fromisoformat(date_to) if date_to else date.today()
+        start_d = date.fromisoformat(date_from) if date_from else end_d - timedelta(days=1)
+
+        heads, lines, has_error, err = 0, 0, False, ""
+        d = start_d
+        while d <= end_d:
+            # fresh DB connection per day: pooler drops long-lived idle conns
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = get_db_connection()
+            cur = conn.cursor()
+            body = _oms_body(d.isoformat(), d.isoformat())
+            day_heads, day_lines = 0, 0
+            day_ok, day_err = False, ""
+            for attempt in range(3):
+                try:
+                    # fresh connection each attempt: pooler may have dropped it
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = get_db_connection()
+                    cur = conn.cursor()
+
+                    # ── UPSERT (no DELETE): safe for partial failures ─────────────
+                    # Heads
+                    for r in client.iter_all("/external/general/sales-head", body):
+                        _upsert_pos_head(cur, company_id, r)
+                        day_heads += 1
+                        if day_heads % 2000 == 0:
+                            conn.commit()
+                    conn.commit()
+
+                    # Lines
+                    for r in client.iter_all("/external/general/sales-menu", body):
+                        _insert_pos_sales_line(cur, company_id, r)
+                        day_lines += 1
+                        for p in r.get("packages") or []:
+                            _insert_pos_package_line(cur, company_id, r, p)
+                            day_lines += 1
+                        if day_lines % 2000 == 0:
+                            conn.commit()
+                    conn.commit()
+
+                    # ── Completeness audit ───────────────────────────────────────
+                    # Check if DB row count matches what we received from API
+                    cur.execute("""
+                        SELECT
+                            (SELECT count(*) FROM esb_data.report_pos_sales_head
+                             WHERE company_id=%s AND sales_date=%s) AS db_heads,
+                            (SELECT count(*) FROM esb_data.report_pos_sales
+                             WHERE company_id=%s AND sales_date=%s) AS db_lines
+                    """, (company_id, d.isoformat(), company_id, d.isoformat()))
+                    audit_row = cur.fetchone()
+                    db_heads, db_lines = audit_row[0], audit_row[1]
+
+                    # Allow up to 1% discrepancy (handles cancelled/voided orders)
+                    head_ok = db_heads >= day_heads * 0.99 if day_heads > 0 else db_heads == 0
+                    line_ok = db_lines >= day_lines * 0.99 if day_lines > 0 else db_lines == 0
+
+                    audit_note = ""
+                    if not head_ok:
+                        audit_note += f"AUDIT head mismatch: API={day_heads} DB={db_heads}; "
+                    if not line_ok:
+                        audit_note += f"AUDIT line mismatch: API={day_lines} DB={db_lines}; "
+                    if audit_note:
+                        print(f"POS {d.isoformat()} audit WARN: {audit_note}", flush=True)
+                        # Retry from top of attempt loop (re-fetch from API)
+                        day_heads, day_lines = 0, 0
+                        day_ok = False
+                        day_err = audit_note.strip()
+                        continue
+
+                    day_ok = True
+                    print(f"POS {d.isoformat()}: {day_heads} heads, {day_lines} lines "
+                          f"(DB: {db_heads} heads, {db_lines} lines) OK", flush=True)
+                    break
+                except Exception as e:
+                    day_err = str(e)[:180]
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    time.sleep(5 * (attempt + 1))
+            if day_ok:
+                heads += day_heads
+                lines += day_lines
+            else:
+                # Log error but CONTINUE to next day (don't abort entire sync)
+                print(f"POS {d.isoformat()} FAILED after 3 attempts: {day_err}", flush=True)
+                has_error = True
+                err = f"{d.isoformat()}: {day_err}"
+                # Continue to next day — don't break
+            d += timedelta(days=1)
+
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sync_history SET status=%s, records_processed=%s, error_message=%s, completed_at=%s WHERE id=%s",
+            ("FAILED" if has_error else "SUCCESS", heads + lines, err,
+             datetime.now(timezone.utc), history_id))
+        conn.commit()
+        return {"heads": heads, "lines": lines} if not has_error else f"ERROR {err}"
+    finally:
+        try:
+            lock_cur.execute("SELECT pg_advisory_unlock(hashtext(%s))", (lock_key,))
+            lock_conn.commit()
+        except Exception:
+            pass
+        try:
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        try:
+            lock_conn.close()
+        except Exception:
+            pass
+
+
+@celery_app.task(name="app.services.reports.sync_pos_sales_backfill")
+def sync_pos_sales_backfill(company_id: int, date_from: str, date_to: str = None,
+                            chunk_days: int = 7):
+    """One-shot backfill for historical POS sales data (Aug 2026 onward).
+
+    Syncs date_from → date_to in {chunk_days}-day chunks to avoid:
+    - OMS API timeouts on very large date ranges
+    - Celery task timeout limits
+    - DB connection pool exhaustion
+
+    Safe for re-run: uses UPSERT (no DELETE), so existing data is never lost.
+
+    Usage:
+        sync_pos_sales_backfill.delay(
+            company_id=1,
+            date_from="2026-08-01",
+            date_to=date.today().isoformat(),
+            chunk_days=7
+        )
+    """
+    end_d = date.fromisoformat(date_to) if date_to else date.today()
+    start_d = date.fromisoformat(date_from)
+
+    total_heads, total_lines = 0, 0
+    errors = []
+    d = start_d
+
+    print(f"[POS_BACKFILL] Starting backfill company={company_id} "
+          f"from {start_d} to {end_d}, chunk={chunk_days}d", flush=True)
+
+    while d <= end_d:
+        chunk_end = min(d + timedelta(days=chunk_days - 1), end_d)
+        result = sync_pos_sales(company_id, d.isoformat(), chunk_end.isoformat())
+
+        if isinstance(result, dict):
+            total_heads += result.get("heads", 0)
+            total_lines += result.get("lines", 0)
+            print(f"[POS_BACKFILL] {d}→{chunk_end}: {result}", flush=True)
+        else:
+            # Result is an error string
+            errors.append(f"{d}→{chunk_end}: {result}")
+            print(f"[POS_BACKFILL] {d}→{chunk_end} ERROR: {result}", flush=True)
+
+        d = chunk_end + timedelta(days=1)
+
+    summary = {"heads": total_heads, "lines": total_lines, "errors": errors}
+    print(f"[POS_BACKFILL] Completed company={company_id}: {total_heads} heads, "
+          f"{total_lines} lines, {len(errors)} days with errors", flush=True)
+    return summary
+
+
+@celery_app.task(name="app.services.reports.sync_pos_sales_recovery")
+def sync_pos_sales_recovery():
+    """Find and re-sync any days with low/incomplete data.
+
+    Scans all active companies, finds days where:
+    - DB row count < 10 (likely empty/missing)
+    - synced_at > 24h ago AND today (stale)
+
+    Triggers sync_pos_sales for those specific days.
+    Run manually or schedule daily.
+    """
+    from app.core.db import get_db_connection
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Find companies with POS sales (RealDictCursor returns dict-like rows)
+        cur.execute("""
+            SELECT DISTINCT company_id
+            FROM esb_data.report_pos_sales
+            WHERE sales_date >= CURRENT_DATE - INTERVAL '60 days'
+        """)
+        # RealDictCursor: fetchall() returns list; iterate before list comprehension
+        rows = cur.fetchall()
+        companies = [r['company_id'] for r in rows] if rows else []
+
+        today = date.today()
+        recovered_days = 0
+
+        for cid in companies:
+            # Find days with suspiciously low line counts (< 10 rows)
+            cur.execute("""
+                SELECT sales_date::text, count(*) as cnt
+                FROM esb_data.report_pos_sales
+                WHERE company_id = %s
+                  AND sales_date >= CURRENT_DATE - INTERVAL '30 days'
+                  AND sales_date < %s
+                GROUP BY sales_date
+                HAVING count(*) < 10
+            """, (cid, today.isoformat()))
+            low_rows = cur.fetchall()
+
+            for row in low_rows:
+                # RealDictCursor: access by column name
+                day_str = str(row['sales_date'])
+                cnt = row['cnt']
+                print(f"[POS_RECOVERY] company={cid} day={day_str} "
+                      f"has only {cnt} rows — re-syncing", flush=True)
+                result = sync_pos_sales(cid, day_str, day_str)
+                if isinstance(result, dict):
+                    recovered_days += 1
+                    print(f"[POS_RECOVERY] Re-synced {cid}/{day_str}: {result}", flush=True)
+                else:
+                    print(f"[POS_RECOVERY] Failed {cid}/{day_str}: {result}", flush=True)
+
+        print(f"[POS_RECOVERY] Done: recovered {recovered_days} days", flush=True)
+        return {"recovered_days": recovered_days}
+    finally:
+        cur.close()
+        conn.close()

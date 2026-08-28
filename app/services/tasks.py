@@ -4,16 +4,23 @@ import hashlib
 import math
 import httpx
 import typing
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 from psycopg2.extras import execute_values, DictCursor
 from app.core.worker import celery_app
 from app.core.db import get_db_connection
-from app.schemas.esb import (
-    ESBProductModel, ESBCategoryModel, ESBSubCategoryModel, ESBUnitModel,
-    ESBBomModel, ESBBranchProductModel, ESBPricelistModel,
-    ESBBranchModel, ESBSupplierModel, ESBGenericModel
-)
 import pytz
+from croniter import croniter
+
+JAKARTA = pytz.timezone("Asia/Jakarta")
+
+
+def _cron_next(cron_expr: str, base=None):
+    """Next run time for a cron expression, in Asia/Jakarta local time."""
+    try:
+        base = base or datetime.now(JAKARTA)
+        return croniter(cron_expr, base).get_next(datetime)
+    except Exception:
+        return None
 
 ESB_API_BASE_URL = os.getenv("ESB_CORE_URL", "https://services.esb.co.id/core")
 
@@ -21,40 +28,118 @@ ESB_API_BASE_URL = os.getenv("ESB_CORE_URL", "https://services.esb.co.id/core")
 ESB_FALLBACK_USERNAME = os.getenv("ESB_CORE_USERNAME", "CALFSUPERADMINOPS")
 ESB_FALLBACK_PASSWORD = os.getenv("ESB_CORE_PASSWORD", "")
 
-# Verified master endpoints (probed 2026-08-15).
-# response_shape: "array" = result is a plain list; "envelope" = {page, limit, count, data}
-# Report endpoints (is_report=True) pull into report_raw_staging only.
-MASTER_ENDPOINTS = [
-    {"entity": "BRANCH",            "path": "/branch",             "id_field": "branchID",     "shape": "array"},
-    {"entity": "PRODUCT",           "path": "/product",            "id_field": "productID",    "shape": "envelope"},
-    {"entity": "CATEGORY",          "path": "/product/category",   "id_field": "categoryID",   "shape": "envelope"},
-    {"entity": "PRODUCT_SUB_CATEGORY", "path": "/product/sub-category", "id_field": "subCategoryID", "shape": "envelope"},
-    {"entity": "PRODUCT_UNIT",      "path": "/units",              "id_field": "uomID",        "shape": "envelope"},
-    {"entity": "PRICELIST",         "path": "/pricelist",          "id_field": "ID",           "shape": "envelope"},
-    {"entity": "SUPPLIER",          "path": "/supplier",           "id_field": "supplierID",   "shape": "envelope"},
-    {"entity": "CUSTOMER",          "path": "/customer",           "id_field": "customerID",   "shape": "envelope"},
-    {"entity": "BOM",               "path": "/product/bom",        "id_field": "bomID",        "shape": "envelope"},
-    {"entity": "DOCUMENT_TEMPLATE", "path": "/document-template",  "id_field": "requestTemplateID", "shape": "envelope"},
-    {"entity": "ACC_PURPOSE",       "path": "/purpose",            "id_field": "purposeID",    "shape": "envelope"},
-    {"entity": "ACC_COST_CENTER",   "path": "/cost-center",        "id_field": "ID",           "shape": "array"},
-    {"entity": "ACC_COA",           "path": "/accounting/coa",     "id_field": "coaNo",        "shape": "array"},
-    {"entity": "COMP_PROJECT",      "path": "/project",            "id_field": "ID",           "shape": "array"},
-    {"entity": "COMP_USER",         "path": "/user",               "id_field": "username",     "shape": "envelope"},
-    {"entity": "PARTNER_CUST_CAT",  "path": "/customer/category",  "id_field": "customerCategoryID", "shape": "array"},
-    {"entity": "PARTNER_SUPP_CAT",  "path": "/supplier/category",  "id_field": "supplierCategoryID", "shape": "array"},
-    {"entity": "CUSTOMER_PRICELIST","path": "/customer-pricelist", "id_field": "ID",           "shape": "envelope"},
-]
+# Dynamic endpoint loading functions
+def _get_endpoints_from_db(company_id: int = None, only_documented: bool = False, 
+                          category: str = None, module: str = None) -> list:
+    """Load endpoints dynamically from esb_data.endpoint_registry.
+    
+    Args:
+        company_id: Filter by company_id (for per-company endpoints)
+        only_documented: Only return endpoints documented in ESB API
+        category: Filter by category ('master' or 'report')
+        module: Filter by module (Product, POS, Accounting, etc.)
+    
+    Returns:
+        List of endpoint dicts: {entity, path, id_field, response_shape, is_active, is_documented, category, module}
+    """
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        base = "SELECT * FROM esb_data.endpoint_registry WHERE is_active = true"
+        params = []
+        
+        if company_id:
+            base += " AND id IN (SELECT endpoint_id FROM esb_data.sync_schedules WHERE company_id = %s AND enabled = true)"
+            params.append(company_id)
+        if only_documented:
+            base += " AND is_documented = true"
+        if category:
+            base += " AND category = %s"
+            params.append(category)
+        if module:
+            base += " AND module = %s"
+            params.append(module)
+            
+        cur.execute(base, params)
+        endpoints = []
+        for row in cur.fetchall():
+            endpoints.append({
+                "entity": row["entity"],
+                "path": row["path"],
+                "id_field": row["id_field"],
+                "response_shape": row["response_shape"],
+                "is_active": row["is_active"],
+                "is_documented": row["is_documented"],
+                "category": row["category"],
+                "module": row["module"],
+                "description": row.get("description", "")
+            })
+        return endpoints
+    finally:
+        cur.close()
+        conn.close()
 
-# Endpoints that exist but are currently empty in CALF scope - keep pulling, low cost.
-OPTIONAL_ENDPOINTS = [
-    {"entity": "ACC_TAX",           "path": "/tax",                "id_field": "taxID",        "shape": "envelope"},
-    {"entity": "ACC_CASHFLOW_CAT",  "path": "/cash-flow-category", "id_field": "ID",           "shape": "envelope"},
-    {"entity": "ACC_APPROVAL_FLOW", "path": "/approval-flow",      "id_field": "ID",           "shape": "envelope"},
-]
+def _get_sync_schedules(company_id: int = None, module: str = None, 
+                       enabled_only: bool = True) -> list:
+    """Load sync schedules dynamically from esb_data.sync_schedules.
+    
+    Args:
+        company_id: Filter by company_id
+        module: Filter by module ('master' or 'report')
+        enabled_only: Only return enabled schedules
+    
+    Returns:
+        List of schedule dicts with joined endpoint and company info
+    """
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        base = """
+            SELECT ss.*, er.entity, er.path, er.id_field, er.response_shape, er.category,
+                   cc.esb_company_code, cc.company_name, cc.esb_username, cc.esb_password,
+                   cc.static_token
+            FROM esb_data.sync_schedules ss
+            JOIN esb_data.endpoint_registry er ON ss.endpoint_id = er.id
+            JOIN esb_data.company_configs cc ON ss.company_id = cc.id
+            WHERE 1=1
+        """
+        params = []
+        
+        if company_id:
+            base += " AND ss.company_id = %s"
+            params.append(company_id)
+        if module:
+            base += " AND ss.module = %s"
+            params.append(module)
+        if enabled_only:
+            base += " AND ss.enabled = true"
+            
+        cur.execute(base, params)
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
 
-REPORT_ENDPOINTS = [
-    {"entity": "POS_TX",            "path": "/pos/transaction",    "id_field": "ID"},
-]
+def _get_due_schedules() -> list:
+    """Get schedules that are due to run based on next_run timestamp."""
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        cur.execute("""
+            SELECT ss.*, er.entity, er.path, er.id_field, er.response_shape, er.category,
+                   cc.esb_company_code, cc.company_name, cc.esb_username, cc.esb_password,
+                   cc.static_token
+            FROM esb_data.sync_schedules ss
+            JOIN esb_data.endpoint_registry er ON ss.endpoint_id = er.id
+            JOIN esb_data.company_configs cc ON ss.company_id = cc.id
+            WHERE ss.enabled = true 
+              AND ss.next_run <= NOW()
+            ORDER BY ss.next_run ASC
+        """)
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
 
 PAGE_SIZE = 100  # verified safe; limit=10000 triggers Validation Error on several endpoints
 
@@ -143,6 +228,9 @@ class ESBClient:
         self._http = httpx.Client(timeout=60.0)
 
     def _reauth(self) -> bool:
+        # Static tokens are long-lived; a 401 means the token was rotated on
+        # the ESB side and we cannot refresh it locally -> only username/password
+        # flow can re-auth.
         if not (self.company_code and self.username and self.password):
             return False
         try:
@@ -226,22 +314,25 @@ def _derive_esb_id(item: dict, id_field: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────
 
 def _normalize(entity: str, item: dict, esb_id: str, company_id: int):
+    """Normalize ESB API response to database table format.
+    Now targets esb_data.master_* tables instead of public.md_* tables.
+    """
     if entity == "BRANCH":
-        return ("md_outlets", (esb_id, company_id, item.get("branchName"), item.get("branchCode"),
+        return ("esb_data.master_branch", (esb_id, company_id, item.get("branchName"), item.get("branchCode"),
                                True, None, None, None, json.dumps(item)))
     if entity == "PRODUCT":
-        return ("md_products", (esb_id, company_id, item.get("productName"), item.get("productCode") or "",
+        return ("esb_data.master_product", (esb_id, company_id, item.get("productName"), item.get("productCode") or "",
                                 item.get("bomName"), item.get("categoryName"), item.get("subCategoryName"),
                                 item.get("categoryTypeName"), bool(item.get("flagActive", 1)), json.dumps(item)))
     if entity == "CATEGORY":
-        return ("md_categories", (esb_id, company_id, item.get("categoryCode"), item.get("categoryName"),
+        return ("esb_data.master_category", (esb_id, company_id, item.get("categoryCode"), item.get("categoryName"),
                                   item.get("categoryTypeName"), bool(item.get("flagActive", 1)),
                                   item.get("categoryTypeID"), item.get("notes"), json.dumps(item)))
     if entity == "PRODUCT_SUB_CATEGORY":
-        return ("md_sub_categories", (esb_id, company_id, None, None, item.get("subCategoryName"),
+        return ("esb_data.master_sub_category", (esb_id, company_id, None, None, item.get("subCategoryName"),
                                       bool(item.get("flagActive", 1)), item.get("deadStockThreshold"), item.get("notes"), json.dumps(item)))
     if entity == "PRODUCT_UNIT":
-        return ("md_units", (esb_id, company_id, item.get("metricName"), item.get("uomName"),
+        return ("esb_data.master_unit", (esb_id, company_id, item.get("metricName"), item.get("uomName"),
                              bool(item.get("flagActive", 1)), json.dumps(item)))
     if entity == "PRICELIST":
         ab = item.get("applicableBranch") or {}
@@ -250,7 +341,7 @@ def _normalize(entity: str, item: dict, esb_id: str, company_id: int):
             branch = "ALL"
         elif isinstance(ab.get("branches"), list) and ab["branches"]:
             branch = ",".join(str(b.get("branchID")) for b in ab["branches"] if b.get("branchID"))
-        return ("md_pricelists", (
+        return ("esb_data.master_pricelist", (
             esb_id, company_id, item.get("productID"), branch, item.get("price") or 0,
             bool(item.get("flagActive", 1)), item.get("priceDate"), item.get("supplierName"),
             item.get("productName"), item.get("productCode"), item.get("unit"), item.get("currencyName"),
@@ -258,91 +349,98 @@ def _normalize(entity: str, item: dict, esb_id: str, company_id: int):
             item.get("uomID"), item.get("currencyID"),
             json.dumps(ab, default=str), json.dumps(item)))
     if entity == "SUPPLIER":
-        return ("md_suppliers", (esb_id, company_id, item.get("supplierName"), None, item.get("category"),
+        return ("esb_data.master_supplier", (esb_id, company_id, item.get("supplierName"), None, item.get("category"),
                                  "ACTIVE" if item.get("flagActive") else "INACTIVE",
                                  item.get("address"), item.get("contactPerson"), item.get("cellPhone"),
                                  item.get("dueDate"), item.get("supplierCategoryID"),
                                  bool(item.get("lockVAT", False)), bool(item.get("vatSubject", False)), json.dumps(item)))
     if entity == "CUSTOMER":
-        return ("md_customers", (esb_id, company_id, item.get("customerName"), item.get("customerCode") or "",
+        return ("esb_data.master_customer", (esb_id, company_id, item.get("customerName"), item.get("customerCode") or "",
                                  str(item.get("customerCategoryID") or ""), item.get("customerCategoryName"),
                                  item.get("paymentDueDays") or 0, item.get("address"), item.get("picName"),
                                  item.get("picPhone"), bool(item.get("flagActive", 1)),
                                  bool(item.get("lockVat", 0)), json.dumps(item)))
     if entity == "BOM":
-        return ("md_boms", (esb_id, company_id, item.get("productID"), item.get("bomCode"), item.get("bomName"),
+        return ("esb_data.master_bill_of_material", (esb_id, company_id, item.get("productID"), item.get("bomCode"), item.get("bomName"),
                             1.0, bool(item.get("flagActive", 1)), item.get("bomTypeID"),
                             item.get("bomTypeName"), item.get("productName"), item.get("uomName"), json.dumps(item)))
     if entity == "DOCUMENT_TEMPLATE":
-        return ("md_document_templates", (esb_id, company_id, item.get("requestTemplateName"),
+        return ("esb_data.master_document_template", (esb_id, company_id, item.get("requestTemplateName"),
                                           item.get("requestTemplateTypeNames"), str(item.get("requestTemplateID")),
                                           bool(item.get("flagActive", 1)), json.dumps(item)))
     if entity == "ACC_PURPOSE":
-        return ("md_purposes", (esb_id, company_id, item.get("purposeName"), item.get("purposeAccount"),
+        return ("esb_data.master_purpose", (esb_id, company_id, item.get("purposeName"), item.get("purposeAccount"),
                                 item.get("purposeCoaNo"), json.dumps(item.get("purposeAppliedTo") or []),
                                 bool(item.get("flagActive", True)), json.dumps(item)))
     if entity == "ACC_COST_CENTER":
-        return ("md_cost_centers", (esb_id, company_id, item.get("costCenter"), item.get("costCenterName"),
+        return ("esb_data.master_cost_center", (esb_id, company_id, item.get("costCenter"), item.get("costCenterName"),
                                     bool(item.get("flagActive", True)), json.dumps(item)))
     if entity == "ACC_COA":
-        return ("md_coas", (esb_id, company_id, item.get("coaNo"), item.get("coaLevel"),
+        return ("esb_data.master_charts_of_account", (esb_id, company_id, item.get("coaNo"), item.get("coaLevel"),
                             item.get("description"), item.get("currency"),
                             str(item.get("branchID") or ""), bool(item.get("flagActive", 0)), json.dumps(item)))
     if entity == "COMP_PROJECT":
-        return ("md_projects", (esb_id, company_id, item.get("projectName"), item.get("projectCode"),
+        return ("esb_data.master_project", (esb_id, company_id, item.get("projectName"), item.get("projectCode"),
                                 bool(item.get("flagActive", True)), json.dumps(item)))
     if entity == "COMP_USER":
-        return ("md_users", (esb_id, company_id, item.get("username"), item.get("fullName"),
+        return ("esb_data.master_user", (esb_id, company_id, item.get("username"), item.get("fullName"),
                              item.get("userRoleID"), item.get("userRoleDesc"),
                              bool(item.get("flagActive", 1)), json.dumps(item)))
     if entity == "PARTNER_CUST_CAT":
-        return ("md_customer_categories", (esb_id, company_id, item.get("customerCategoryName"),
+        return ("esb_data.master_customer_category", (esb_id, company_id, item.get("customerCategoryName"),
                                            bool(item.get("flagActive", 1)), json.dumps(item)))
     if entity == "PARTNER_SUPP_CAT":
-        return ("md_supplier_categories", (esb_id, company_id, item.get("supplierCategoryName"), True, json.dumps(item)))
+        return ("esb_data.master_supplier_category", (esb_id, company_id, item.get("supplierCategoryName"), True, json.dumps(item)))
     if entity == "CUSTOMER_PRICELIST":
-        return ("md_customer_pricelists", (esb_id, company_id, item.get("customerName"),
+        return ("esb_data.master_customer_pricelist", (esb_id, company_id, item.get("customerName"),
                                            item.get("productName"), item.get("productCode"),
                                            item.get("uomName"), item.get("currencyName"),
                                            item.get("price") or 0, item.get("priceDate"),
                                            item.get("expireDate"), True, json.dumps(item)))
     if entity == "ACC_TAX":
-        return ("esb_raw_staging", None)  # staging-only for now (empty dataset)
+        return ("esb_data.master_tax", (esb_id, company_id, item.get("taxName"), item.get("rate"),
+                                      item.get("taxCode"), bool(item.get("flagActive", 1)), json.dumps(item)))
+    if entity == "ACC_CASHFLOW_CAT":
+        return ("esb_data.master_cashflow_category", (esb_id, company_id, item.get("name"),
+                                               item.get("code"), bool(item.get("flagActive", 1)), json.dumps(item)))
+    if entity == "ACC_APPROVAL_FLOW":
+        return ("esb_data.master_approval_flow", (esb_id, company_id, item.get("name"),
+                                          item.get("description"), bool(item.get("flagActive", 1)), json.dumps(item)))
     return ("esb_raw_staging", None)
 
 
 UPSERTS = {
-    "md_outlets": """
-        INSERT INTO md_outlets (esb_id, company_id, name, branch_code, is_active, location_name, stock, available_stock, raw_data)
+    "esb_data.master_branch": """
+        INSERT INTO esb_data.master_branch (esb_id, company_id, name, branch_code, is_active, location_name, stock, available_stock, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, branch_code=EXCLUDED.branch_code, is_active=EXCLUDED.is_active,
             location_name=EXCLUDED.location_name, stock=EXCLUDED.stock, available_stock=EXCLUDED.available_stock,
             raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_products": """
-        INSERT INTO md_products (esb_id, company_id, name, product_code, bom_name, category_name,
+    "esb_data.master_product": """
+        INSERT INTO esb_data.master_product (esb_id, company_id, name, product_code, bom_name, category_name,
             sub_category_name, category_type_name, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, product_code=EXCLUDED.product_code, bom_name=EXCLUDED.bom_name,
             category_name=EXCLUDED.category_name, sub_category_name=EXCLUDED.sub_category_name,
             category_type_name=EXCLUDED.category_type_name, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_categories": """
-        INSERT INTO md_categories (esb_id, company_id, code, name, type_name, flag_active, category_type_id, notes, raw_data)
+    "esb_data.master_category": """
+        INSERT INTO esb_data.master_category (esb_id, company_id, code, name, type_name, flag_active, category_type_id, notes, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             code=EXCLUDED.code, name=EXCLUDED.name, type_name=EXCLUDED.type_name,
             flag_active=EXCLUDED.flag_active, category_type_id=EXCLUDED.category_type_id,
             notes=EXCLUDED.notes, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_sub_categories": """
-        INSERT INTO md_sub_categories (esb_id, company_id, category_esb_id, code, name, flag_active, dead_stock_threshold, notes, raw_data)
+    "esb_data.master_sub_category": """
+        INSERT INTO esb_data.master_sub_category (esb_id, company_id, category_esb_id, code, name, flag_active, dead_stock_threshold, notes, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             category_esb_id=EXCLUDED.category_esb_id, code=EXCLUDED.code, name=EXCLUDED.name,
             flag_active=EXCLUDED.flag_active, dead_stock_threshold=EXCLUDED.dead_stock_threshold,
             notes=EXCLUDED.notes, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_units": """
-        INSERT INTO md_units (esb_id, company_id, code, name, flag_active, raw_data)
+    "esb_data.master_unit": """
+        INSERT INTO esb_data.master_unit (esb_id, company_id, code, name, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             code=EXCLUDED.code, name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_pricelists": """
-        INSERT INTO md_pricelists (esb_id, company_id, product_esb_id, branch_esb_id, price, flag_active,
+    "esb_data.master_pricelist": """
+        INSERT INTO esb_data.master_pricelist (esb_id, company_id, product_esb_id, branch_esb_id, price, flag_active,
             price_date, supplier_name, product_name, product_code, unit_name, currency, expired_date,
             pricelist_num, product_detail_esb_id, uom_id, currency_id, applicable_branch, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
@@ -353,65 +451,65 @@ UPSERTS = {
             expired_date=EXCLUDED.expired_date, pricelist_num=EXCLUDED.pricelist_num,
             product_detail_esb_id=EXCLUDED.product_detail_esb_id, uom_id=EXCLUDED.uom_id,
             currency_id=EXCLUDED.currency_id, applicable_branch=EXCLUDED.applicable_branch, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_suppliers": """
-        INSERT INTO md_suppliers (esb_id, company_id, name, type, supplier_category, status, address,
+    "esb_data.master_supplier": """
+        INSERT INTO esb_data.master_supplier (esb_id, company_id, name, type, supplier_category, status, address,
             contact_person, cell_phone, due_date, category_esb_id, lock_vat, vat_subject, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, supplier_category=EXCLUDED.supplier_category, status=EXCLUDED.status,
             address=EXCLUDED.address, contact_person=EXCLUDED.contact_person, cell_phone=EXCLUDED.cell_phone,
             due_date=EXCLUDED.due_date, category_esb_id=EXCLUDED.category_esb_id,
             lock_vat=EXCLUDED.lock_vat, vat_subject=EXCLUDED.vat_subject, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_customers": """
-        INSERT INTO md_customers (esb_id, company_id, name, code, category_esb_id, category_name,
+    "esb_data.master_customer": """
+        INSERT INTO esb_data.master_customer (esb_id, company_id, name, code, category_esb_id, category_name,
             payment_due_days, address, pic_name, pic_phone, flag_active, lock_vat, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, code=EXCLUDED.code, category_esb_id=EXCLUDED.category_esb_id,
             category_name=EXCLUDED.category_name, payment_due_days=EXCLUDED.payment_due_days,
             address=EXCLUDED.address, pic_name=EXCLUDED.pic_name, pic_phone=EXCLUDED.pic_phone,
             flag_active=EXCLUDED.flag_active, lock_vat=EXCLUDED.lock_vat, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_boms": """
-        INSERT INTO md_boms (esb_id, company_id, product_esb_id, code, name, output_qty, flag_active,
+    "esb_data.master_bill_of_material": """
+        INSERT INTO esb_data.master_bill_of_material (esb_id, company_id, product_esb_id, code, name, output_qty, flag_active,
             bom_type_id, bom_type_name, product_name, uom_name, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             product_esb_id=EXCLUDED.product_esb_id, code=EXCLUDED.code, name=EXCLUDED.name,
             output_qty=EXCLUDED.output_qty, flag_active=EXCLUDED.flag_active,
             bom_type_id=EXCLUDED.bom_type_id, bom_type_name=EXCLUDED.bom_type_name,
             product_name=EXCLUDED.product_name, uom_name=EXCLUDED.uom_name, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_document_templates": """
-        INSERT INTO md_document_templates (esb_id, company_id, name, document_type, template_code, flag_active, raw_data)
+    "esb_data.master_document_template": """
+        INSERT INTO esb_data.master_document_template (esb_id, company_id, name, document_type, template_code, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, document_type=EXCLUDED.document_type, template_code=EXCLUDED.template_code,
             flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_purposes": """
-        INSERT INTO md_purposes (esb_id, company_id, name, account, coa_no, applied_to, flag_active, raw_data)
+    "esb_data.master_purpose": """
+        INSERT INTO esb_data.master_purpose (esb_id, company_id, name, account, coa_no, applied_to, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, account=EXCLUDED.account, coa_no=EXCLUDED.coa_no,
             applied_to=EXCLUDED.applied_to, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_coas": """
-        INSERT INTO md_coas (esb_id, company_id, coa_no, coa_level, description, currency, branch_esb_id, flag_active, raw_data)
+    "esb_data.master_charts_of_account": """
+        INSERT INTO esb_data.master_charts_of_account (esb_id, company_id, coa_no, coa_level, description, currency, branch_esb_id, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             coa_no=EXCLUDED.coa_no, coa_level=EXCLUDED.coa_level, description=EXCLUDED.description,
             currency=EXCLUDED.currency, branch_esb_id=EXCLUDED.branch_esb_id,
             flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_projects": """
-        INSERT INTO md_projects (esb_id, company_id, name, code, flag_active, raw_data)
+    "esb_data.master_project": """
+        INSERT INTO esb_data.master_project (esb_id, company_id, name, code, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, code=EXCLUDED.code, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_users": """
-        INSERT INTO md_users (esb_id, company_id, username, full_name, role_id, role_desc, flag_active, raw_data)
+    "esb_data.master_user": """
+        INSERT INTO esb_data.master_user (esb_id, company_id, username, full_name, role_id, role_desc, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             username=EXCLUDED.username, full_name=EXCLUDED.full_name, role_id=EXCLUDED.role_id,
             role_desc=EXCLUDED.role_desc, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_customer_categories": """
-        INSERT INTO md_customer_categories (esb_id, company_id, name, flag_active, raw_data)
+    "esb_data.master_customer_category": """
+        INSERT INTO esb_data.master_customer_category (esb_id, company_id, name, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_supplier_categories": """
-        INSERT INTO md_supplier_categories (esb_id, company_id, name, flag_active, raw_data)
+    "esb_data.master_supplier_category": """
+        INSERT INTO esb_data.master_supplier_category (esb_id, company_id, name, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_customer_pricelists": """
-        INSERT INTO md_customer_pricelists (esb_id, company_id, customer_name, product_name, product_code,
+    "esb_data.master_customer_pricelist": """
+        INSERT INTO esb_data.master_customer_pricelist (esb_id, company_id, customer_name, product_name, product_code,
             uom_name, currency_name, price, price_date, expire_date, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             customer_name=EXCLUDED.customer_name, product_name=EXCLUDED.product_name,
@@ -419,10 +517,23 @@ UPSERTS = {
             currency_name=EXCLUDED.currency_name, price=EXCLUDED.price,
             price_date=EXCLUDED.price_date, expire_date=EXCLUDED.expire_date,
             flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
-    "md_cost_centers": """
-        INSERT INTO md_cost_centers (esb_id, company_id, code, name, flag_active, raw_data)
+    "esb_data.master_cost_center": """
+        INSERT INTO esb_data.master_cost_center (esb_id, company_id, code, name, flag_active, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
             code=EXCLUDED.code, name=EXCLUDED.name, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
+    # Additional master tables for undocumented entities
+    "esb_data.master_tax": """
+        INSERT INTO esb_data.master_tax (esb_id, company_id, name, rate, code, flag_active, raw_data)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, rate=EXCLUDED.rate, code=EXCLUDED.code, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
+    "esb_data.master_cashflow_category": """
+        INSERT INTO esb_data.master_cashflow_category (esb_id, company_id, name, code, flag_active, raw_data)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, code=EXCLUDED.code, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
+    "esb_data.master_approval_flow": """
+        INSERT INTO esb_data.master_approval_flow (esb_id, company_id, name, description, flag_active, raw_data)
+        VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
+            name=EXCLUDED.name, description=EXCLUDED.description, flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
 }
 
 
@@ -555,22 +666,40 @@ def _sync_product_details(company_id: int, client: ESBClient):
 
 
 def _get_due_entities(cur) -> list:
-    """Return entities whose sync interval has elapsed (or never synced)."""
+    """Return entities whose sync interval has elapsed (or never synced) using dynamic scheduling."""
+    # First get schedules that are due based on next_run timestamp
     cur.execute("""
-        SELECT entity_type FROM md_sync_schedules
-        WHERE enabled = true
-          AND (last_synced_at IS NULL OR last_synced_at + (interval_minutes || ' minutes')::interval <= NOW())
+        SELECT DISTINCT er.entity 
+        FROM esb_data.sync_schedules ss
+        JOIN esb_data.endpoint_registry er ON ss.endpoint_id = er.id
+        WHERE ss.enabled = true 
+          AND ss.module = 'master'
+          AND ss.next_run <= NOW()
     """)
-    return [r["entity_type"] for r in cur.fetchall()]
+    return [r["entity"] for r in cur.fetchall()]
 
 
 def _mark_entity_synced(cur, entity: str):
-    cur.execute("UPDATE md_sync_schedules SET last_synced_at = NOW(), updated_at = NOW() WHERE entity_type = %s", (entity,))
+    """Mark entity as synced by updating the corresponding schedules."""
+    cur.execute("""
+        SELECT id, cron_expr FROM esb_data.sync_schedules
+        WHERE endpoint_id IN (
+            SELECT id FROM esb_data.endpoint_registry WHERE entity = %s
+        )
+    """, (entity,))
+    for row in cur.fetchall():
+        cur.execute("""
+            UPDATE esb_data.sync_schedules
+            SET last_run = NOW(),
+                next_run = COALESCE(%s, NOW() + INTERVAL '1 hour'),
+                updated_at = NOW()
+            WHERE id = %s
+        """, (_cron_next(row["cron_expr"]), row["id"]))
 
 
 @celery_app.task
 def sync_company_data(company_id: int, company_code: str, username: str, password: str,
-                      entities: list):
+                      entities: list, static_token: str = None):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
@@ -581,28 +710,34 @@ def sync_company_data(company_id: int, company_code: str, username: str, passwor
             print("No due entities for this run.")
             return
 
-        try:
-            # Serialize the login flow across parallel company tasks (lazy import:
-            # trx_engine imports this module at load time)
-            from app.services.trx_engine import _auth_locked_company_token
-            token = _auth_locked_company_token(company_code, username, password)
-        except ESBAuthError as e:
-            cur.execute(
-                "INSERT INTO sync_history (entity_type, status, company_id, error_message, completed_at) VALUES (%s,%s,%s,%s,%s)",
-                ("AUTH", "FAILED", company_id, str(e), datetime.now(timezone.utc)))
-            conn.commit()
-            print(f"Auth failed for {company_code}: {e}")
-            return
+        token = static_token
+        if not token:
+            try:
+                # Serialize the login flow across parallel company tasks (lazy import:
+                # trx_engine imports this module at load time)
+                from app.services.trx_engine import _auth_locked_company_token
+                token = _auth_locked_company_token(company_code, username, password)
+            except ESBAuthError as e:
+                cur.execute(
+                    "INSERT INTO sync_history (entity_type, status, company_id, error_message, completed_at) VALUES (%s,%s,%s,%s,%s)",
+                    ("AUTH", "FAILED", company_id, str(e), datetime.now(timezone.utc)))
+                conn.commit()
+                print(f"Auth failed for {company_code}: {e}")
+                return
+        else:
+            print(f"Using static token for {company_code}")
 
         client = ESBClient(token, company_code, username, password)
-        for ep in MASTER_ENDPOINTS + OPTIONAL_ENDPOINTS:
+        # Use dynamic endpoint registry instead of hardcoded arrays
+        endpoints = _get_endpoints_from_db(company_id=company_id, category='master')
+        for ep in endpoints:
             if ep["entity"] not in entities:
                 continue
             if not _is_engine_enabled(cur):
                 print("Engine disabled mid-sync. Aborting.")
                 return
             try:
-                sync_endpoint_data(company_id, client, ep["entity"], ep["path"], ep["id_field"], ep["shape"])
+                sync_endpoint_data(company_id, client, ep["entity"], ep["path"], ep["id_field"], ep["response_shape"])
             except Exception as e:
                 print(f"Error syncing {ep['entity']} for {company_code}: {e}")
 
@@ -654,8 +789,8 @@ def sync_master_data():
             return
 
         cur.execute("""
-            SELECT id, esb_company_code, esb_username, esb_password
-            FROM company_configs WHERE is_active = true AND esb_company_code IS NOT NULL
+            SELECT id, esb_company_code, esb_username, esb_password, static_token
+            FROM esb_data.company_configs WHERE is_active = true AND esb_company_code IS NOT NULL
         """)
         companies = cur.fetchall()
         if not companies:
@@ -674,7 +809,7 @@ def sync_master_data():
         for co in companies:
             username = co["esb_username"] or ESB_FALLBACK_USERNAME
             password = co["esb_password"] or ESB_FALLBACK_PASSWORD
-            if not (username and password):
+            if not (co["static_token"] or (username and password)):
                 continue
             sync_company_data.delay(
                 company_id=co["id"],
@@ -682,12 +817,88 @@ def sync_master_data():
                 username=username,
                 password=password,
                 entities=due_entities,
+                static_token=co["static_token"],
             )
 
         # Mark entities as synced (per-run granularity; company-level done inside task)
         for entity in due_entities:
             _mark_entity_synced(cur, entity)
         conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+
+@celery_app.task
+def dynamic_schedule_router():
+    """Dynamic scheduling router that checks esb_data.sync_schedules and dispatches tasks.
+    
+    This replaces the old fixed-interval scheduling with cron-based dynamic scheduling.
+    Runs every minute to check for due schedules and dispatches appropriate tasks.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        if not _is_engine_enabled(cur):
+            return "Engine disabled"
+        
+        # Get all due schedules
+        due_schedules = _get_due_schedules()
+        if not due_schedules:
+            return "No due schedules"
+        
+        dispatched_count = 0
+        for schedule in due_schedules:
+            try:
+                # Dispatch based on module type
+                if schedule['module'] == 'master':
+                    sync_company_data.delay(
+                        company_id=schedule['company_id'],
+                        company_code=schedule['esb_company_code'],
+                        username=schedule['esb_username'],
+                        password=schedule['esb_password'],
+                        entities=[schedule['entity']],
+                        static_token=schedule.get('static_token'),
+                    )
+                elif schedule['module'] == 'report':
+                    celery_app.send_task("app.services.reports.sync_report", kwargs={
+                        "report_type": schedule['entity'],
+                        "company_id": schedule['company_id'],
+                        "static_token": schedule.get('static_token'),
+                    })
+                elif schedule['module'] == 'pos':
+                    # Daily sync: last 30 days to catch any missing historical data
+                    # + today for real-time. UPSERT ensures no data loss on re-runs.
+                    today_str = date.today().isoformat()
+                    from_str = (date.today() - timedelta(days=30)).isoformat()
+                    celery_app.send_task("app.services.reports.sync_pos_sales", kwargs={
+                        "company_id": schedule['company_id'],
+                        "date_from": from_str,
+                        "date_to": today_str,
+                    })
+
+                # Update the schedule's next_run time using cron expression
+                cur.execute("""
+                    UPDATE esb_data.sync_schedules
+                    SET last_run = NOW(),
+                        next_run = COALESCE(%s, NOW() + INTERVAL '1 hour'),
+                        updated_at = NOW()
+                    WHERE id = %s
+                """, (_cron_next(schedule['cron_expr']), schedule['id']))
+                
+                dispatched_count += 1
+            except Exception as e:
+                print(f"Error dispatching schedule {schedule['id']}: {e}")
+                # Mark as failed but don't stop other schedules
+                cur.execute("""
+                    UPDATE esb_data.sync_schedules 
+                    SET next_run = NOW() + INTERVAL '5 minutes',  -- Retry in 5 minutes
+                        updated_at = NOW()
+                    WHERE id = %s
+                """, (schedule['id'],))
+        
+        conn.commit()
+        return f"Dispatched {dispatched_count} schedules"
     finally:
         cur.close()
         conn.close()

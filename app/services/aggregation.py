@@ -15,11 +15,9 @@ Architecture:
   - PostgreSQL parallel queries with UNION ALL for efficiency
 """
 import json
-import time
 import typing
 from datetime import date, datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
 
 import redis as redis_lib
 import os

@@ -11,5 +11,7 @@ def get_db_connection():
     if not db_url:
         raise ValueError("Database URL not found in environment variables.")
     
-    conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor)
+    # Set search_path to prioritize esb_data schema, then fall back to public
+    # This allows queries to find tables in esb_data first, then public
+    conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor, options="-c search_path=esb_data,public")
     return conn

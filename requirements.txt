@@ -9,4 +9,6 @@ psycopg2-binary
 python-dotenv
 gevent
 pytz
+croniter
 openpyxl
+xlsxwriter

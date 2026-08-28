@@ -1,4 +1,4 @@
-﻿-- Extra master tables from MASTER.md requirements (verified endpoints 2026-08-15)
+-- Extra master tables from MASTER.md requirements (verified endpoints 2026-08-15)
 
 -- /project (array, 38 rows)
 CREATE TABLE IF NOT EXISTS public.md_projects (

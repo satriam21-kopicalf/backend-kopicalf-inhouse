@@ -6,14 +6,11 @@ data rows. Uploads to Supabase Storage bucket `report-exports` (private);
 signed URLs (24h) are created on demand by the API.
 """
 import io
-import json
 import os
 import typing
 from datetime import datetime
 
 import httpx
-from openpyxl import Workbook
-from openpyxl.utils import get_column_letter
 
 from app.core.worker import celery_app
 from app.core.db import get_db_connection
@@ -32,39 +29,36 @@ def _company_name(cur, company_id: int) -> str:
 
 def _build_xlsx(title: str, company_name: str, meta: typing.List[typing.Tuple[str, str]],
                 columns: list, rows: typing.Iterable[dict]) -> io.BytesIO:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Report"
-
-    ws.cell(row=1, column=1, value=title).font = ws.cell(row=1, column=1).font.copy(bold=True)
-    ws.cell(row=2, column=1, value=company_name)
-
-    r = 4
-    for label, value in meta:
-        ws.cell(row=r, column=1, value=label)
-        ws.cell(row=r, column=2, value=value)
-        r += 1
-    r += 1  # blank line like ERP
-
-    header_row = r
-    for c, col in enumerate(columns, start=1):
-        cell = ws.cell(row=r, column=c, value=col["label"])
-        cell.font = cell.font.copy(bold=True)
-    r += 1
-
-    for row in rows:
-        for c, col in enumerate(columns, start=1):
-            ws.cell(row=r, column=c, value=row.get(col["key"]))
-        r += 1
-
-    # reasonable column widths
-    for c, col in enumerate(columns, start=1):
-        width = max(12, min(32, len(col["label"]) + 4))
-        ws.column_dimensions[get_column_letter(c)].width = width
-    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+    """Stream rows into a constant-memory xlsxwriter workbook: ~2x faster than
+    openpyxl write-only and constant RAM for large exports (100k+ rows)."""
+    import xlsxwriter
 
     buf = io.BytesIO()
-    wb.save(buf)
+    wb = xlsxwriter.Workbook(buf, {"constant_memory": True})
+    ws = wb.add_worksheet("Report")
+    bold = wb.add_format({"bold": True})
+
+    for c, col in enumerate(columns):
+        ws.set_column(c, c, max(12, min(32, len(col["label"]) + 4)))
+
+    ws.write(0, 0, title, bold)
+    ws.write(1, 0, company_name)
+    r = 3
+    for label, value in meta:
+        ws.write(r, 0, label, bold)
+        ws.write(r, 1, value)
+        r += 1
+    r += 1  # blank line like ERP
+    for c, col in enumerate(columns):
+        ws.write(r, c, col["label"], bold)
+    ws.freeze_panes(r + 1, 0)
+
+    keys = [col["key"] for col in columns]
+    for row in rows:
+        r += 1
+        ws.write_row(r, 0, [row.get(k) for k in keys])
+
+    wb.close()
     buf.seek(0)
     return buf
 

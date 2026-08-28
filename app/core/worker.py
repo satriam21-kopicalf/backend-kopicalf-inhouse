@@ -51,6 +51,18 @@ celery_app.conf.task_routes = {
     'app.services.trx_engine.backfill_router': {'queue': 'queue_backfill'},
     'app.services.trx_engine.backfill_entity': {'queue': 'queue_backfill'},
     'app.services.trx_engine.rpt_backfill_entity': {'queue': 'queue_backfill'},
+    # Dedicated report-pull lane: every scheduled direct report (module='report'
+    # in esb_data.sync_schedules, e.g. RPT_GOODS_RECEIPT_RECAPITULATION) runs on
+    # worker_report-1, fully parallel to the POS lane (queue_sync) and the
+    # master lane (queue_master). New report entities only need an
+    # endpoint_registry + sync_schedules row + REPORT_SYNC_CONFIG entry to
+    # automatically use this lane.
+    'app.services.reports.sync_report': {'queue': 'queue_report'},
+    # POS sales pull gets its own lane so huge day-pulls never block the TRX
+    # delta lane on queue_sync.
+    'app.services.reports.sync_pos_sales': {'queue': 'queue_report'},
+    'app.services.reports.sync_pos_sales_backfill': {'queue': 'queue_report'},
+    'app.services.reports.sync_pos_sales_recovery': {'queue': 'queue_report'},
     'app.services.export_engine.generate_export': {'queue': 'queue_export'},
 }
 
@@ -65,6 +77,12 @@ celery_app.conf.beat_schedule = {
     'dynamic-sync-router': {
         'task': 'app.services.tasks.sync_master_data_router',
         'schedule': crontab(minute='*/5'),
+    },
+    # Cron-based dynamic router: dispatches esb_data.sync_schedules
+    # (master / report / pos modules, e.g. GR recap + POS sales daily)
+    'cron-schedule-router': {
+        'task': 'app.services.tasks.dynamic_schedule_router',
+        'schedule': crontab(minute='*'),
     },
     # Lane C: Real-time sync (T-0 current day, every 5 minutes)
     'trx-realtime-sync': {
@@ -92,5 +110,10 @@ celery_app.conf.beat_schedule = {
     'trx-completeness-audit': {
         'task': 'app.services.trx_engine.completeness_audit',
         'schedule': crontab(hour=7, minute=15),
+    },
+    # POS sales recovery: find days with low/incomplete data and re-sync (08:00 WIB)
+    'pos-sales-recovery': {
+        'task': 'app.services.reports.sync_pos_sales_recovery',
+        'schedule': crontab(hour=8, minute=0),
     },
 }

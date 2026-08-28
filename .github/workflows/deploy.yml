@@ -18,7 +18,7 @@ on:
         default: 'false'
 
 env:
-  DEPLOY_PATH: /root/be-kopicalf-inhouse
+  DEPLOY_PATH: /docker/be-kopicalf-inhouse
 
 jobs:
   deploy:
@@ -68,7 +68,7 @@ jobs:
 
             echo "=== Updating docker-compose.yml ==="
             # Update image tag in docker-compose.yml
-            sed -i 's|image: .*calf-backend:.*|image: ${{ secrets.DOCKER_USERNAME }}/calf-backend:latest|' docker-compose.yml
+            sed -i 's|image: .*calf-backend:|image: kopicalf/calf-backend:|' docker-compose.yml
 
             echo "=== Starting services ==="
             docker compose up -d

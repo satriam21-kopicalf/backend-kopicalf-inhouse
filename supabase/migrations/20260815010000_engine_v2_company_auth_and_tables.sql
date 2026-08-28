@@ -1,4 +1,4 @@
-﻿-- =====================================================================
+-- =====================================================================
 -- ENGINE V2: Multi-company auth (login/company switch) + schema alignment
 -- Based on verified ESB API documentation (probed 2026-08-15)
 --
