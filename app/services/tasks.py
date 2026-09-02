@@ -10,6 +10,7 @@ from app.core.worker import celery_app
 from app.core.db import get_db_connection
 import pytz
 from croniter import croniter
+from app.services.operational_window import is_within_operational_window, log_operational_window_status
 
 JAKARTA = pytz.timezone("Asia/Jakarta")
 
@@ -143,13 +144,100 @@ def _get_due_schedules() -> list:
 
 PAGE_SIZE = 100  # verified safe; limit=10000 triggers Validation Error on several endpoints
 
+# Configuration for circuit breaker (can be overridden via environment)
+CIRCUIT_BREAKER_THRESHOLD = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "3"))
+CIRCUIT_BREAKER_RESET_TIMEOUT = int(os.getenv("CIRCUIT_BREAKER_RESET_TIMEOUT", "60"))  # seconds
+
 
 class CircuitBreakerOpenException(Exception):
+    """Raised when circuit breaker is open."""
     pass
 
 
 class ESBAuthError(Exception):
+    """Raised when ESB authentication fails."""
     pass
+
+
+class ESBCircuitBreaker:
+    """Enhanced circuit breaker with half-open state for automatic recovery."""
+
+    CLOSED = "closed"      # Normal operation
+    OPEN = "open"          # Failing, reject requests
+    HALF_OPEN = "half_open"  # Testing if service recovered
+
+    def __init__(self, threshold: int = CIRCUIT_BREAKER_THRESHOLD,
+                 reset_timeout: int = CIRCUIT_BREAKER_RESET_TIMEOUT):
+        self.threshold = threshold
+        self.reset_timeout = reset_timeout
+        self.state = self.CLOSED
+        self.failure_count = 0
+        self.success_count = 0
+        self.opened_at = None
+        self.last_attempt = None
+
+    def record_success(self):
+        """Record a successful request."""
+        self.failure_count = 0
+        self.success_count += 1
+        if self.state == self.HALF_OPEN:
+            # Recovery successful, close the circuit
+            self.state = self.CLOSED
+            self.success_count = 0
+            print(f"[CircuitBreaker] Recovery successful, circuit CLOSED")
+        elif self.state == self.CLOSED:
+            # Reset success count after reaching threshold in closed state
+            if self.success_count >= self.threshold:
+                self.success_count = 0
+
+    def record_failure(self):
+        """Record a failed request."""
+        self.failure_count += 1
+        self.success_count = 0
+
+        if self.state == self.HALF_OPEN:
+            # Failed during recovery test, re-open
+            self.state = self.OPEN
+            self.opened_at = datetime.now(timezone.utc)
+            print(f"[CircuitBreaker] Recovery failed, circuit re-OPENED")
+        elif self.state == self.CLOSED:
+            if self.failure_count >= self.threshold:
+                self.state = self.OPEN
+                self.opened_at = datetime.now(timezone.utc)
+                print(f"[CircuitBreaker] Threshold reached, circuit OPENED (failures={self.failure_count})")
+
+    def can_attempt(self) -> bool:
+        """Check if a request can be attempted."""
+        import time
+
+        if self.state == self.CLOSED:
+            return True
+
+        if self.state == self.OPEN:
+            # Check if reset timeout has elapsed
+            if self.opened_at:
+                elapsed = (datetime.now(timezone.utc) - self.opened_at).total_seconds()
+                if elapsed >= self.reset_timeout:
+                    self.state = self.HALF_OPEN
+                    self.last_attempt = datetime.now(timezone.utc)
+                    print(f"[CircuitBreaker] Reset timeout elapsed, circuit HALF_OPEN")
+                    return True
+            return False
+
+        if self.state == self.HALF_OPEN:
+            # Allow only one test request
+            if self.last_attempt:
+                elapsed = (datetime.now(timezone.utc) - self.last_attempt).total_seconds()
+                if elapsed >= 5:  # 5 seconds between test attempts
+                    self.last_attempt = datetime.now(timezone.utc)
+                    return True
+            return False
+
+        return True
+
+    def get_state(self) -> str:
+        """Get current circuit state for monitoring."""
+        return self.state
 
 
 def _esb_login(username: str, password: str) -> str:
@@ -216,76 +304,86 @@ def _esb_company_token(company_code: str, username: str, password: str,
 
 
 class ESBClient:
-    """HTTP client for ESB API with company-scoped token and single re-auth on 401."""
+    """HTTP client for ESB API with company-scoped token and enhanced circuit breaker."""
 
     def __init__(self, token: str, company_code: str = "", username: str = "", password: str = ""):
         self.token = token
         self.company_code = company_code
         self.username = username
         self.password = password
-        self.error_count = 0
-        self.circuit_open = False
         self._http = httpx.Client(timeout=60.0)
+        # Use enhanced circuit breaker with half-open state
+        self.circuit_breaker = ESBCircuitBreaker()
 
     def _reauth(self) -> bool:
-        # Static tokens are long-lived; a 401 means the token was rotated on
-        # the ESB side and we cannot refresh it locally -> only username/password
-        # flow can re-auth.
+        """Re-authenticate to ESB and update token."""
         if not (self.company_code and self.username and self.password):
             return False
         try:
             self.token = _esb_company_token(self.company_code, self.username, self.password)
+            print(f"[ESBClient] Re-auth successful for {self.company_code}")
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[ESBClient] Re-auth failed for {self.company_code}: {e}")
             return False
 
     def get(self, path: str, params: typing.Optional[dict] = None):
-        if self.circuit_open:
-            raise CircuitBreakerOpenException("Circuit is open due to consecutive failures")
+        # Check circuit breaker before attempting request
+        if not self.circuit_breaker.can_attempt():
+            raise CircuitBreakerOpenException(
+                f"Circuit breaker is {self.circuit_breaker.get_state()} for {self.company_code}"
+            )
 
-        response = self._http.get(
-            f"{ESB_API_BASE_URL}{path}",
-            headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
-            params=params,
-        )
+        try:
+            response = self._http.get(
+                f"{ESB_API_BASE_URL}{path}",
+                headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
+                params=params,
+            )
 
-        # ESB returns 200 with status=fail JSON on auth errors too; handle both
-        if response.status_code == 401:
-            if self._reauth():
-                response = self._http.get(
-                    f"{ESB_API_BASE_URL}{path}",
-                    headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
-                    params=params,
-                )
-
-        if response.status_code >= 400:
-            self._record_error()
-            response.raise_for_status()
-
-        body = response.json()
-        if body.get("status") not in (None, "ok"):
-            msg = body.get("message", "")
-            code = body.get("code", "")
-            if code == "EC03100001":  # invalid/expired token -> re-auth once
+            # ESB returns 200 with status=fail JSON on auth errors too; handle both
+            if response.status_code == 401:
                 if self._reauth():
                     response = self._http.get(
                         f"{ESB_API_BASE_URL}{path}",
                         headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
                         params=params,
                     )
-                    body = response.json()
-                    if body.get("status") == "ok":
-                        self.error_count = 0
-                        return body
-            raise RuntimeError(f"ESB error {code}: {msg} ({path})")
+                else:
+                    self.circuit_breaker.record_failure()
+                    raise RuntimeError(f"Re-auth failed for {self.company_code}")
 
-        self.error_count = 0
-        return body
+            if response.status_code >= 400:
+                self.circuit_breaker.record_failure()
+                response.raise_for_status()
 
-    def _record_error(self):
-        self.error_count += 1
-        if self.error_count >= 3:
-            self.circuit_open = True
+            body = response.json()
+            if body.get("status") not in (None, "ok"):
+                msg = body.get("message", "")
+                code = body.get("code", "")
+                if code == "EC03100001":  # invalid/expired token -> re-auth once
+                    if self._reauth():
+                        response = self._http.get(
+                            f"{ESB_API_BASE_URL}{path}",
+                            headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
+                            params=params,
+                        )
+                        body = response.json()
+                        if body.get("status") == "ok":
+                            self.circuit_breaker.record_success()
+                            return body
+                self.circuit_breaker.record_failure()
+                raise RuntimeError(f"ESB error {code}: {msg} ({path})")
+
+            # Success!
+            self.circuit_breaker.record_success()
+            return body
+
+        except CircuitBreakerOpenException:
+            raise
+        except Exception as e:
+            self.circuit_breaker.record_failure()
+            raise
 
 
 def _extract_page(body: dict, shape: str) -> typing.Tuple[list, int]:
@@ -700,6 +798,9 @@ def _mark_entity_synced(cur, entity: str):
 @celery_app.task
 def sync_company_data(company_id: int, company_code: str, username: str, password: str,
                       entities: list, static_token: str = None):
+    if not is_within_operational_window():
+        return
+    
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
@@ -776,7 +877,8 @@ def sync_all_companies(companies: list, entities: list):
 
 @celery_app.task
 def sync_master_data():
-
+    if not is_within_operational_window():
+        return
 
     """Spawn per-company sync tasks for all ACTIVE companies using per-company credentials."""
     conn = get_db_connection()
@@ -836,6 +938,9 @@ def dynamic_schedule_router():
     This replaces the old fixed-interval scheduling with cron-based dynamic scheduling.
     Runs every minute to check for due schedules and dispatches appropriate tasks.
     """
+    if not is_within_operational_window():
+        return
+        
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
@@ -906,6 +1011,9 @@ def dynamic_schedule_router():
 
 @celery_app.task
 def sync_master_data_router():
+    if not is_within_operational_window():
+        return
+        
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:

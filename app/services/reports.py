@@ -25,6 +25,7 @@ import typing
 from datetime import date
 
 from app.core.db import get_db_connection
+from app.services.operational_window import is_within_operational_window
 
 # Report Category Registry
 REPORT_CATEGORIES = {
@@ -2817,11 +2818,14 @@ _SYNC_MODES = {
 @celery_app.task(name="app.services.reports.sync_sales_recap_detail")
 def sync_sales_recap_detail(company_id: int = None):
     """Transform staged PRODUCT_SALES payloads (trx_raw_staging) into the
-    structured esb_data.report_sales_recapitulation_detail table.
+    structured esb_data report_sales_recapitulation_detail table.
 
     Idempotent: upserts on (company_id, report_date, branch_esb_id, transaction_number).
     This avoids re-pulling slow ESB endpoints for data already staged by the TRX lane.
     """
+    if not is_within_operational_window():
+        return "Outside operational window (03:00-08:00 WIB) - sales recap detail sync skipped"
+    
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -2886,6 +2890,9 @@ def sync_report(report_type: str, company_id: int, date_from: str = None,
     report_type is an endpoint_registry entity (e.g. RPT_GOODS_RECEIPT_RECAPITULATION).
     Default window is the entity's configured trailing window ending today.
     """
+    if not is_within_operational_window():
+        return f"Outside operational window (03:00-08:00 WIB) - {report_type} sync skipped"
+    
     cfg = REPORT_SYNC_CONFIG.get(report_type)
     if not cfg:
         return f"No sync config for {report_type}"
@@ -3247,6 +3254,9 @@ def sync_pos_sales(company_id: int, date_from: str = None, date_to: str = None):
 
     Each package/modifier is exploded into its own 'EXTRA' row
     ('<Menu> (PACKAGE)') exactly like the ERP export."""
+    if not is_within_operational_window():
+        return f"Outside operational window (03:00-08:00 WIB) - POS sales sync skipped"
+    
     lock_key = f"sync_pos_sales:{company_id}:{date_from}:{date_to}"
     lock_conn = get_db_connection()
     try:
@@ -3416,6 +3426,9 @@ def sync_pos_sales_backfill(company_id: int, date_from: str, date_to: str = None
             chunk_days=7
         )
     """
+    if not is_within_operational_window():
+        return f"Outside operational window (03:00-08:00 WIB) - POS sales backfill skipped"
+    
     end_d = date.fromisoformat(date_to) if date_to else date.today()
     start_d = date.fromisoformat(date_from)
 
@@ -3458,6 +3471,9 @@ def sync_pos_sales_recovery():
     Triggers sync_pos_sales for those specific days.
     Run manually or schedule daily.
     """
+    if not is_within_operational_window():
+        return "Outside operational window (03:00-08:00 WIB) - POS sales recovery skipped"
+    
     from app.core.db import get_db_connection
 
     conn = get_db_connection()

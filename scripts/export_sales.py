@@ -15,11 +15,11 @@ QUERY = """
 SELECT *
 FROM esb_data.v_sales_recap_detail
 WHERE sales_date >= TIMESTAMP '2026-08-01 00:00:00'
-  AND sales_date <  TIMESTAMP '2026-08-28 00:00:00'
+  AND sales_date <  TIMESTAMP '2026-08-30 00:00:00'
 ORDER BY sales_date ASC;
 """
 
-OUTPUT_FILE = "v_sales_recap_detail_2026-08-01_2026-08-27.xlsx"
+OUTPUT_FILE = "v_sales_recap_detail_2026-08-01_2026-08-30.xlsx"
 
 
 def main():

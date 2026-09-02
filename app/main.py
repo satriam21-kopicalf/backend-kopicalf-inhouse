@@ -1389,3 +1389,151 @@ async def master_summary_new():
     finally:
         cur.close()
         conn.close()
+
+
+# COGS RATIO ANALYSIS ENDPOINTS
+# ==============================
+
+@app.get("/api/v1/cogs-ratio")
+async def get_cogs_ratio(
+    period: str,
+    branch_type: str = None
+):
+    """
+    Get COGS ratio analysis for all branches for a given period.
+
+    Parameters:
+    - period: Period in YYYY-MM format (required)
+    - branch_type: Filter by branch type: OUTLET, HUB WH, HUB CK (optional)
+
+    Returns branch-level metrics including:
+    - Revenue and COGS per branch
+    - COGS ratio vs target (default 65%)
+    - Usage ratio (actual vs theoretical)
+    - Flagging for branches needing investigation
+    """
+    from app.core.db import get_db_connection
+    from app.utils.cogs_calculator import calculate_cogs_metrics
+
+    try:
+        conn = get_db_connection()
+        metrics = calculate_cogs_metrics(conn, period, branch_type)
+        conn.close()
+
+        # Calculate summary KPIs
+        if metrics:
+            total_branches = len(metrics)
+            flagged_branches = sum(1 for m in metrics if m['flagged'])
+            avg_cogs = sum(m['cogsRatio'] for m in metrics) / total_branches
+            avg_usage = sum(m['usageRatio'] for m in metrics) / total_branches
+            total_revenue = sum(m['revenue'] for m in metrics)
+            total_cogs = sum(m['cogs'] for m in metrics)
+
+            summary = {
+                'totalBranches': total_branches,
+                'flaggedBranches': flagged_branches,
+                'avgCogsRatio': round(avg_cogs, 1),
+                'avgUsageRatio': round(avg_usage, 1),
+                'totalRevenue': total_revenue,
+                'totalCogs': total_cogs
+            }
+        else:
+            summary = {
+                'totalBranches': 0,
+                'flaggedBranches': 0,
+                'avgCogsRatio': 0,
+                'avgUsageRatio': 0,
+                'totalRevenue': 0,
+                'totalCogs': 0
+            }
+
+        return {
+            'summary': summary,
+            'data': metrics
+        }
+
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Failed to calculate COGS ratio: {str(e)}")
+
+
+@app.get("/api/v1/cogs-ratio/{branch_id}")
+async def get_cogs_ratio_by_branch(
+    branch_id: int,
+    period: str
+):
+    """
+    Get detailed COGS ratio analysis for a specific branch.
+
+    Parameters:
+    - branch_id: Branch ID (required)
+    - period: Period in YYYY-MM format (required)
+    """
+    from app.core.db import get_db_connection
+
+    try:
+        conn = get_db_connection()
+        query = """
+        SELECT
+            mb.id as branch_id,
+            mb.branch_code,
+            mb.name as branch_name,
+            mb.raw_data->>'branchType' as branch_type,
+            %s as period,
+
+            COALESCE(SUM(sh.grand_total), 0) as revenue,
+            COALESCE(SUM(sh.grand_total), 0) * 0.65 as cogs,
+            65.0 as target_cogs_ratio,
+            MAX(sh.synced_at) as last_updated
+        FROM esb_data.master_branch mb
+        LEFT JOIN esb_data.report_pos_sales_head sh ON mb.branch_code = sh.branch_code
+            AND TO_CHAR(sh.sales_date, 'YYYY-MM') = %s
+        WHERE mb.id = %s
+        GROUP BY mb.id, mb.branch_code, mb.name, mb.raw_data->>'branchType'
+        """
+
+        cur = conn.cursor()
+        cur.execute(query, (period, period, branch_id))
+        result = cur.fetchone()
+
+        if not result:
+            conn.close()
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Branch not found")
+
+        revenue = float(result['revenue']) if result['revenue'] else 0
+        cogs = float(result['cogs']) if result['cogs'] else 0
+        target_cogs = float(result['target_cogs_ratio']) if result['target_cogs_ratio'] else 65.0
+        last_updated = result['last_updated']
+
+        cogs_ratio = (cogs / revenue * 100) if revenue > 0 else 0
+        gap = cogs_ratio - target_cogs
+
+        # Normalize branch type
+        branch_type = result['branch_type']
+        normalized_branch_type = 'OUTLET'
+        if branch_type:
+            if 'HUB' in branch_type and 'WH' in branch_type:
+                normalized_branch_type = 'HUB WH'
+            elif 'HUB' in branch_type and 'CK' in branch_type:
+                normalized_branch_type = 'HUB CK'
+
+        conn.close()
+
+        return {
+            'branchId': result['branch_id'],
+            'branchCode': result['branch_code'],
+            'branchName': result['branch_name'],
+            'branchType': normalized_branch_type,
+            'period': period,
+            'revenue': revenue,
+            'cogs': cogs,
+            'cogsRatio': round(cogs_ratio, 1),
+            'targetCogsRatio': target_cogs,
+            'gap': round(gap, 1),
+            'lastUpdated': str(last_updated)[:10] if last_updated else None
+        }
+
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Failed to get COGS ratio for branch: {str(e)}")
