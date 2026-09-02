@@ -24,8 +24,10 @@ async def trx_status():
     """Dual-lane TRX engine status: watermarks per company x entity x lane,
     staging counts, and the latest reconciliation results."""
     from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("""
             SELECT w.company_id, c.esb_company_code, c.company_name, w.entity_type, w.lane,
@@ -84,8 +86,10 @@ async def trx_backfill_run(company_id: int | None = None, entity: str | None = N
     Tasks self-gate on the night window; use force=true to bypass for smoke tests."""
     from app.core.db import get_db_connection
     from app.core.worker import celery_app
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         if company_id and entity:
             celery_app.send_task("app.services.trx_engine.backfill_entity",
@@ -111,8 +115,10 @@ async def reports_summary():
     powers the LIVE badges on the Reporting menu."""
     from app.core.db import get_db_connection
     from app.services.reports import REPORTS
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         out = []
         for slug, spec in REPORTS.items():
@@ -228,8 +234,10 @@ async def create_export(body: dict):
     if slug not in REPORTS:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"Unknown report: {slug}")
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         export_id = str(uuid.uuid4())
         cur.execute("""
@@ -249,8 +257,10 @@ async def create_export(body: dict):
 @app.get("/api/v1/exports/{export_id}")
 async def get_export(export_id: str):
     from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("SELECT status, file_path, error_message FROM export_files WHERE id = %s", (export_id,))
         row = cur.fetchone()
@@ -285,8 +295,10 @@ async def trigger_sync(req: SyncTriggerRequest):
     from app.services.trx_engine import backfill_entity, rpt_backfill_entity
     from fastapi import HTTPException
     
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("SELECT esb_company_code, esb_username, esb_password FROM company_configs WHERE id = %s", (req.company_id,))
         co = cur.fetchone()
@@ -327,8 +339,10 @@ async def trigger_sync(req: SyncTriggerRequest):
 async def list_companies():
     """List all company configurations including ESB credentials."""
     from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("""
             SELECT id, esb_company_code, company_name, esb_username, esb_password,
@@ -352,8 +366,10 @@ async def list_companies():
 async def update_company(company_id: int, company: dict):
     """Update company configuration including ESB credentials."""
     from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         # Build update query dynamically based on provided fields
         updates = []
@@ -400,8 +416,10 @@ async def update_company(company_id: int, company: dict):
 @app.get("/api/v1/settings/engine")
 async def get_engine_settings():
     from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("SELECT sync_batch_size, work_hours_interval_minutes, morning_window_interval_minutes FROM engine_settings WHERE id = 1")
         row: Any = cur.fetchone()
@@ -415,8 +433,10 @@ async def get_engine_settings():
 @app.put("/api/v1/settings/engine")
 async def update_engine_settings(settings: dict):
     from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("""
             UPDATE engine_settings
@@ -526,8 +546,9 @@ async def parallel_report(slug: str, date_from: str, date_to: str,
     if spec.get("source") == "table":
         from app.services.reports import run_report
         from app.core.db import get_db_connection as _conn
+        from psycopg2.extras import RealDictCursor
         conn = _conn()
-        cur = conn.cursor()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         try:
             cur.execute("SELECT id, esb_company_code, company_name FROM esb_data.company_configs WHERE is_active = true ORDER BY id")
             cos = [dict(r) for r in cur.fetchall()]
@@ -651,8 +672,10 @@ async def parallel_companies():
         }
     """
     from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("""
             SELECT id, esb_company_code, company_name
@@ -685,8 +708,10 @@ async def get_endpoint_registry(only_documented: bool = False, category: str = N
         List of endpoint configurations
     """
     from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         base = "SELECT * FROM esb_data.endpoint_registry WHERE is_active = true"
         params = []
@@ -719,8 +744,10 @@ async def create_endpoint(endpoint: dict):
     from app.core.db import get_db_connection
     from fastapi import HTTPException
     
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("""
             INSERT INTO esb_data.endpoint_registry 
@@ -758,8 +785,10 @@ async def update_endpoint(entity: str, endpoint: dict):
     from app.core.db import get_db_connection
     from fastapi import HTTPException
     
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         updates = []
         values = []
@@ -810,8 +839,10 @@ async def delete_endpoint(entity: str):
     from app.core.db import get_db_connection
     from fastapi import HTTPException
     
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("""
             UPDATE esb_data.endpoint_registry
@@ -868,8 +899,10 @@ async def create_sync_schedule(schedule: dict):
     from fastapi import HTTPException
     import json
     
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("""
             INSERT INTO esb_data.sync_schedules 
@@ -908,8 +941,10 @@ async def update_sync_schedule(schedule_id: int, schedule: dict):
     from fastapi import HTTPException
     import json
     
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         updates = []
         values = []
@@ -964,8 +999,10 @@ async def delete_sync_schedule(schedule_id: int):
     from app.core.db import get_db_connection
     from fastapi import HTTPException
     
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("DELETE FROM esb_data.sync_schedules WHERE id = %s RETURNING id", (schedule_id,))
         result = cur.fetchone()
@@ -998,8 +1035,10 @@ async def get_master_normalization(entity_type: str = None, company_id: int = No
     """
     from app.core.db import get_db_connection
     
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         base = "SELECT * FROM esb_data.master_normalization WHERE is_active = true"
         params = []
@@ -1034,8 +1073,10 @@ async def update_master_normalization(rule_id: int, rule: dict):
     from app.core.db import get_db_connection
     from fastapi import HTTPException
     
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         updates = []
         values = []
@@ -1086,8 +1127,10 @@ async def create_master_normalization(rule: dict):
     from app.core.db import get_db_connection
     from fastapi import HTTPException
     
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("""
             INSERT INTO esb_data.master_normalization 
@@ -1116,8 +1159,10 @@ async def get_data_inventory():
     every esb_data master/report table, staging totals, active schedules with
     next dispatch, and recent sync activity. Powers the Configuration overview."""
     from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("""
             SELECT table_name FROM information_schema.tables
@@ -1225,8 +1270,10 @@ async def master_entity_rows(entity: str, company_id: int = 1, limit: int = 100,
     from app.core.db import get_db_connection
     from fastapi import HTTPException
     table_suffix = "".join(ch for ch in entity.lower() if ch.isalnum() or ch == "_")
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute(
             "SELECT table_name FROM information_schema.tables "
@@ -1284,8 +1331,10 @@ async def trigger_report_sync(report_type: str, body: dict):
     from app.core.worker import celery_app
     from fastapi import HTTPException
     
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         # Validate that the report type exists in endpoint registry
         cur.execute("""
@@ -1330,8 +1379,10 @@ async def master_summary_new():
     """Master data summary from esb_data.master_* tables (dynamic — any new
     master table created by the engine is picked up automatically)."""
     from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("""
             SELECT table_name FROM information_schema.tables
@@ -1501,6 +1552,7 @@ async def get_cogs_ratio_periods():
 
         return result
     finally:
+        conn.rollback()
         cur.close()
         conn.close()
 
@@ -1577,9 +1629,7 @@ async def get_cogs_ratio_trend(
                 })
             return result
 
-        placeholders = ",".join([f"TO_CHAR(sh.sales_date, 'YYYY-MM') = %s" for _ in period_list])
-        branch_filter = f"AND mb.id = {branch_id}" if branch_id else ""
-        cur.execute(f"""
+        cur.execute("""
             SELECT TO_CHAR(sh.sales_date, 'YYYY-MM') AS period,
                    AVG(65.0) AS avg_cogs_ratio,
                    AVG(100.0) AS avg_usage_ratio,
@@ -1589,10 +1639,11 @@ async def get_cogs_ratio_trend(
                    0 AS flagged_branches
             FROM esb_data.report_pos_sales_head sh
             JOIN esb_data.master_branch mb ON mb.branch_code = sh.branch_code
-            WHERE ({placeholders}) {branch_filter}
+            WHERE TO_CHAR(sh.sales_date, 'YYYY-MM') = ANY(%s)
+              AND (%s::int IS NULL OR mb.id = %s::int)
             GROUP BY period
             ORDER BY period
-        """, tuple(period_list))
+        """, (period_list, branch_id, branch_id))
         raw_rows = cur.fetchall()
 
         result = []
@@ -1628,6 +1679,7 @@ async def get_cogs_ratio_by_branch(
     - period: Period in YYYY-MM format (required)
     """
     from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
 
     try:
         conn = get_db_connection()
@@ -1650,7 +1702,7 @@ async def get_cogs_ratio_by_branch(
         GROUP BY mb.id, mb.branch_code, mb.name, mb.raw_data->>'branchType'
         """
 
-        cur = conn.cursor()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(query, (period, period, branch_id))
         result = cur.fetchone()
 
@@ -1716,8 +1768,10 @@ async def get_cogs_snapshot(
     from app.services.aggregation import refresh_cogs_snapshot
     from datetime import datetime
 
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         where = "WHERE s.company_id = %s AND s.period_label = %s"
         params = [company_id, period]
@@ -1803,8 +1857,10 @@ async def get_usage_ratio(
     from app.services.aggregation import refresh_usage_ratio
     from datetime import datetime
 
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         where = "WHERE u.company_id = %s AND u.period_label = %s"
         params = [company_id, period]
@@ -1876,8 +1932,10 @@ async def get_dashboard_summary(period: str):
     """
     from app.core.db import get_db_connection
 
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         # COGS from analysis snapshot
         cur.execute("""
@@ -1893,43 +1951,55 @@ async def get_dashboard_summary(period: str):
         """, (period,))
         cogs_row = cur.fetchone()
 
-        # Stock opname pending approvals
-        cur.execute("""
-            SELECT COUNT(*) AS pending
-            FROM esb_data.stock_opname_header
-            WHERE status IN ('draft', 'submitted')
-        """)
+        # Stock opname pending approvals (graceful if table doesn't exist)
+        try:
+            cur.execute("""
+                SELECT COUNT(*) AS pending
+                FROM esb_data.stock_opname_header
+                WHERE status IN ('draft', 'submitted')
+            """)
+            pending_so = dict(cur.fetchone())["pending"]
+        except Exception:
+            pending_so = 0
 
-        # Waste pending approvals
-        cur.execute("""
-            SELECT COUNT(*) AS pending
-            FROM esb_data.waste_header
-            WHERE status IN ('draft', 'submitted')
-        """)
+        # Waste pending approvals (graceful if table doesn't exist)
+        try:
+            cur.execute("""
+                SELECT COUNT(*) AS pending
+                FROM esb_data.waste_header
+                WHERE status IN ('draft', 'submitted')
+            """)
+            pending_waste = dict(cur.fetchone())["pending"]
+        except Exception:
+            pending_waste = 0
 
-        # Critical stock items (low stock alert)
-        cur.execute("""
-            SELECT COUNT(*) AS critical
-            FROM esb_data.stock_opname_detail sod
-            JOIN esb_data.stock_opname_header soh ON soh.id = sod.header_id
-            WHERE sod.variance_qty < 0
-              AND soh.status = 'approved'
-              AND DATE(soh.created_at) >= CURRENT_DATE - INTERVAL '7 days'
-        """)
+        # Critical stock items (graceful if table doesn't exist)
+        try:
+            cur.execute("""
+                SELECT COUNT(*) AS critical
+                FROM esb_data.stock_opname_detail sod
+                JOIN esb_data.stock_opname_header soh ON soh.id = sod.header_id
+                WHERE sod.variance_qty < 0
+                  AND soh.status = 'approved'
+                  AND DATE(soh.created_at) >= CURRENT_DATE - INTERVAL '7 days'
+            """)
+            critical_stock = dict(cur.fetchone())["critical"]
+        except Exception:
+            critical_stock = 0
 
-        # Recent waste value MTD
-        cur.execute("""
-            SELECT COALESCE(SUM(total_value), 0) AS waste_mtd
-            FROM esb_data.waste_header
-            WHERE TO_CHAR(waste_date, 'YYYY-MM') = %s
-              AND status = 'approved'
-        """, (period,))
+        # Recent waste value MTD (graceful if table doesn't exist)
+        try:
+            cur.execute("""
+                SELECT COALESCE(SUM(total_value), 0) AS waste_mtd
+                FROM esb_data.waste_header
+                WHERE TO_CHAR(waste_date, 'YYYY-MM') = %s
+                  AND status = 'approved'
+            """, (period,))
+            waste_mtd_val = dict(cur.fetchone())["waste_mtd"]
+        except Exception:
+            waste_mtd_val = 0
 
         cogs = dict(cogs_row)
-        pending_so = dict(cur.fetchone())
-        pending_waste = dict(cur.fetchone())
-        critical_stock = dict(cur.fetchone())
-        waste_mtd = dict(cur.fetchone())
 
         # Estimate data completeness from snapshot coverage
         cur.execute("""
@@ -1950,9 +2020,9 @@ async def get_dashboard_summary(period: str):
             "totalRevenue": float(cogs["total_revenue"]),
             "totalCogs": float(cogs["total_cogs"]),
             "flaggedOutlets": int(cogs["flagged_branches"]),
-            "pendingApprovals": int(pending_so["pending"]) + int(pending_waste["pending"]),
-            "criticalStockItems": int(critical_stock["critical"]),
-            "wasteValueMTD": float(waste_mtd["waste_mtd"]),
+            "pendingApprovals": int(pending_so) + int(pending_waste),
+            "criticalStockItems": int(critical_stock),
+            "wasteValueMTD": float(waste_mtd_val),
             "dataCompleteness": data_completeness,
             "hasStockOpnameData": False,
             "hasWasteData": False,
@@ -1984,8 +2054,10 @@ async def get_sales_recap_detail(
     """
     from app.core.db import get_db_connection
 
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         where = "WHERE l.company_id = 1 AND TO_CHAR(l.sales_date, 'YYYY-MM') = %s"
         params: list = [period]
@@ -2052,8 +2124,10 @@ async def get_sales_recap_head(
     """
     from app.core.db import get_db_connection
 
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         where = "WHERE company_id = 1 AND TO_CHAR(sales_date, 'YYYY-MM') = %s"
         params: list = [period]
@@ -2102,8 +2176,10 @@ async def get_sales_summary(period: str):
     """
     from app.core.db import get_db_connection
 
+    from psycopg2.extras import RealDictCursor
+
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("""
             SELECT
