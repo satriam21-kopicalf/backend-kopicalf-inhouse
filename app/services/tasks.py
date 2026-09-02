@@ -773,6 +773,72 @@ def _sync_product_details(company_id: int, client: ESBClient):
         conn.close()
 
 
+def _sync_bom_materials(company_id: int, client: ESBClient):
+    """Pull /product/bom/{bomID} details (bomDetails array) into esb_data.master_bom_material.
+
+    Iterates all BOM headers from esb_data.master_bill_of_material and fetches
+    the material line items from ESB. Standard material cost = SUM(line.qty * line.lastHpp).
+    """
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    try:
+        # Get all BOM headers for this company
+        cur.execute("""
+            SELECT esb_id FROM esb_data.master_bill_of_material
+            WHERE company_id = %s
+        """, (company_id,))
+        bom_headers = [(r["esb_id"],) for r in cur.fetchall()]
+
+        for bom_esb_id, in bom_headers:
+            try:
+                body = client.get(f"/product/bom/{bom_esb_id}")
+                result = body.get("result") or {}
+                rows = []
+                for line_idx, detail in enumerate(result.get("bomDetails") or [], start=1):
+                    rows.append((
+                        company_id,
+                        bom_esb_id,
+                        line_idx,
+                        str(detail.get("productDetailID", "")) or None,
+                        str(detail.get("productID", "")) or None,
+                        detail.get("qty", 0) or 0,
+                        detail.get("uomQty", 0) or 0,
+                        detail.get("conversionQty", 0) or 0,
+                        detail.get("uomName"),
+                        detail.get("lastHpp", 0) or 0,
+                        detail.get("price", 0) or 0,
+                        detail.get("yieldPercent", 0) or 0,
+                        detail.get("weightFactor", 0) or 0,
+                        detail.get("printGroup"),
+                        detail.get("stockQty", 0) or 0,
+                        json.dumps(detail),
+                    ))
+                if rows:
+                    execute_values(cur, """
+                        INSERT INTO esb_data.master_bom_material
+                            (company_id, bom_esb_id, line_num, material_esb_id, material_product_esb_id,
+                             qty, uom_qty, conversion_qty, uom_name, hpp, price,
+                             yield_percent, weight_factor, print_group, stock_qty, raw_data, synced_at)
+                        VALUES %s
+                        ON CONFLICT (company_id, bom_esb_id, line_num) DO UPDATE SET
+                            material_esb_id=EXCLUDED.material_esb_id,
+                            material_product_esb_id=EXCLUDED.material_product_esb_id,
+                            qty=EXCLUDED.qty, uom_qty=EXCLUDED.uom_qty,
+                            conversion_qty=EXCLUDED.conversion_qty, uom_name=EXCLUDED.uom_name,
+                            hpp=EXCLUDED.hpp, price=EXCLUDED.price,
+                            yield_percent=EXCLUDED.yield_percent, weight_factor=EXCLUDED.weight_factor,
+                            print_group=EXCLUDED.print_group, stock_qty=EXCLUDED.stock_qty,
+                            raw_data=EXCLUDED.raw_data, updated_at=NOW(), synced_at=NOW()
+                    """, rows)
+                    conn.commit()
+            except Exception:
+                conn.rollback()
+                continue
+    finally:
+        cur.close()
+        conn.close()
+
+
 def _get_due_entities(cur) -> list:
     """Return entities whose sync interval has elapsed (or never synced) using dynamic scheduling."""
     # First get schedules that are due based on next_run timestamp
@@ -857,6 +923,13 @@ def sync_company_data(company_id: int, company_code: str, username: str, passwor
                 _sync_product_details(company_id, client)
             except Exception as e:
                 print(f"Product detail sync failed for {company_code}: {e}")
+
+        # BOM material lines: fetch bomDetails for each BOM header
+        if "BOM" in entities:
+            try:
+                _sync_bom_materials(company_id, client)
+            except Exception as e:
+                print(f"BOM material sync failed for {company_code}: {e}")
     finally:
         cur.close()
         conn.close()
