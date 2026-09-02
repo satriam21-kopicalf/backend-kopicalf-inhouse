@@ -1115,6 +1115,12 @@ RPT_DIRECT: typing.Dict[str, dict] = {
         "params_for": lambda d: {"reportDate": d.isoformat()},
         "window_days": 2,   # yesterday + today (T-2 -> T)
     },
+    # Purchase Recapitulation Report - PO-level recap
+    "RPT_PURCHASE_RECAPITULATION": {
+        "path": "/report/purchase-recapitulation",
+        "params_for": lambda d: {"dateFrom": d.isoformat(), "dateTo": d.isoformat()},
+        "window_days": 2,   # yesterday + today (T-2 -> T)
+    },
 }
 
 
@@ -1194,6 +1200,67 @@ def _sync_menu_cogs(cur, conn, company_id: int, d: date, rows: list) -> int:
             cogs_percentage = EXCLUDED.cogs_percentage,
             gross_profit = EXCLUDED.gross_profit,
             gross_profit_percentage = EXCLUDED.gross_profit_percentage,
+            raw_data = EXCLUDED.raw_data,
+            synced_at = EXCLUDED.synced_at
+        """,
+        [(r + (datetime.now(timezone.utc),)) for r in records],
+        template=None,
+    )
+    conn.commit()
+    return len(records)
+
+
+def _sync_purchase_recap(cur, conn, company_id: int, d: date, rows: list) -> int:
+    """Sync Purchase Recapitulation rows into esb_data.report_purchase_recapitulation.
+
+    Upserts on (company_id, report_date, purchase_order_num).
+    API endpoint: /report/purchase-recapitulation (undocumented)."""
+    from psycopg2.extras import execute_values
+    records = []
+    for r in rows:
+        po_date = _parse_date(r.get("purchaseOrderDate") or r.get("poDate") or d.isoformat())
+        records.append((
+            company_id,
+            d,
+            str(r.get("branchCode") or r.get("branchID") or "")[:50],
+            str(r.get("purchaseOrderNum") or r.get("poNumber") or "")[:50],
+            po_date,
+            str(r.get("supplierName") or r.get("supplier") or "")[:200],
+            str(r.get("supplierCode") or "")[:50],
+            str(r.get("branchName") or "")[:100],
+            str(r.get("departmentName") or r.get("department") or "")[:100],
+            float(r.get("totalAmount") or r.get("total_amount") or 0) or 0,
+            float(r.get("totalTax") or r.get("total_tax") or 0) or 0,
+            float(r.get("totalDiscount") or r.get("total_discount") or 0) or 0,
+            float(r.get("netAmount") or r.get("net_amount") or 0) or 0,
+            str(r.get("statusName") or r.get("status") or "")[:50],
+            str(r.get("notes") or r.get("additionalInfo") or "")[:500],
+            json.dumps(r, default=str),
+        ))
+    if not records:
+        return 0
+    execute_values(
+        cur,
+        """
+        INSERT INTO esb_data.report_purchase_recapitulation
+            (company_id, report_date, branch_esb_id, purchase_order_num, purchase_order_date,
+             supplier_name, supplier_code, branch_name, department_name,
+             total_amount, total_tax, total_discount, net_amount,
+             status_name, notes, raw_data, synced_at)
+        VALUES %s
+        ON CONFLICT (company_id, report_date, purchase_order_num) DO UPDATE SET
+            branch_esb_id = EXCLUDED.branch_esb_id,
+            purchase_order_date = EXCLUDED.purchase_order_date,
+            supplier_name = EXCLUDED.supplier_name,
+            supplier_code = EXCLUDED.supplier_code,
+            branch_name = EXCLUDED.branch_name,
+            department_name = EXCLUDED.department_name,
+            total_amount = EXCLUDED.total_amount,
+            total_tax = EXCLUDED.total_tax,
+            total_discount = EXCLUDED.total_discount,
+            net_amount = EXCLUDED.net_amount,
+            status_name = EXCLUDED.status_name,
+            notes = EXCLUDED.notes,
             raw_data = EXCLUDED.raw_data,
             synced_at = EXCLUDED.synced_at
         """,
@@ -1356,12 +1423,14 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
     # Phase 1 priorities: all report entities needed for analysis
     # Added 2026-09-02: RPT_STOCK_MOVEMENT, RPT_SALES_PAYMENT_SUMMARY
     # Added 2026-09-02: RPT_MENU_COGS - menu-level cost analysis
+    # Added 2026-09-02: RPT_PURCHASE_RECAPITULATION - PO-level recap
     priority_entities = (
         "PRODUCT_SALES",
         "RPT_GOODS_RECEIPT_RECAPITULATION",
         "RPT_STOCK_MOVEMENT",
         "RPT_SALES_PAYMENT_SUMMARY",
         "RPT_MENU_COGS",
+        "RPT_PURCHASE_RECAPITULATION",
     )
     if entity not in priority_entities:
         return f"Temporarily paused non-priority RPT entity {entity}"
@@ -1401,6 +1470,9 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
             if entity == "RPT_MENU_COGS":
                 cur.execute("""SELECT min(report_date) AS d FROM esb_data.report_menu_cogs
                                WHERE company_id = %s""", (company_id,))
+            elif entity == "RPT_PURCHASE_RECAPITULATION":
+                cur.execute("""SELECT min(report_date) AS d FROM esb_data.report_purchase_recapitulation
+                               WHERE company_id = %s""", (company_id,))
             else:
                 cur.execute("""SELECT min(period_start) AS d FROM report_raw_staging
                                WHERE company_id = %s AND report_type = %s""", (company_id, entity))
@@ -1432,6 +1504,16 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
             # RPT_MENU_COGS uses a dedicated table (esb_data.report_menu_cogs)
             if entity == "RPT_MENU_COGS":
                 pulled += _sync_menu_cogs(cur, conn, company_id, d, rows)
+                try:
+                    lock.reacquire()
+                except Exception:
+                    pass
+                d += timedelta(days=1)
+                continue
+
+            # RPT_PURCHASE_RECAPITULATION uses a dedicated table
+            if entity == "RPT_PURCHASE_RECAPITULATION":
+                pulled += _sync_purchase_recap(cur, conn, company_id, d, rows)
                 try:
                     lock.reacquire()
                 except Exception:

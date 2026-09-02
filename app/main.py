@@ -1537,3 +1537,172 @@ async def get_cogs_ratio_by_branch(
     except Exception as e:
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"Failed to get COGS ratio for branch: {str(e)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 5: Analysis Snapshot API (pre-computed from analysis tables)
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/analysis/cogs-snapshot")
+async def get_cogs_snapshot(
+    period: str,
+    company_id: int = 1,
+    branch_type: typing.Optional[str] = None,
+    flagged_only: bool = False,
+):
+    """Pre-computed COGS ratio snapshot from esb_data.analysis_cogs_snapshot.
+
+    Falls back to computing from raw tables if snapshot is empty.
+    Query params: period=YYYY-MM, company_id, branch_type, flagged_only.
+    """
+    from app.services.aggregation import refresh_cogs_snapshot
+    from datetime import datetime
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        where = "WHERE s.company_id = %s AND s.period_label = %s"
+        params = [company_id, period]
+        if branch_type:
+            where += " AND s.branch_type = %s"
+            params.append(branch_type)
+        if flagged_only:
+            where += " AND s.flagged = TRUE"
+
+        cur.execute(f"""
+            SELECT s.branch_id, s.branch_esb_id, s.branch_code, s.branch_name,
+                   s.branch_type, s.period_label,
+                   s.revenue, s.cogs, s.cogs_ratio, s.target_cogs_ratio,
+                   s.gap, s.teoretis_usage, s.actual_usage, s.usage_ratio,
+                   s.flagged, s.trend,
+                   s.last_updated::text, s.refreshed_at::text
+            FROM esb_data.analysis_cogs_snapshot s
+            {where}
+            ORDER BY s.branch_type, s.branch_name
+        """, params)
+        rows = cur.fetchall()
+
+        if rows:
+            total = len(rows)
+            flagged = sum(1 for r in rows if r[14])
+            avg_cogs = sum(float(r[8]) for r in rows) / total
+            avg_usage = sum(float(r[13]) for r in rows) / total
+            total_rev = sum(float(r[6]) for r in rows)
+            total_cogs = sum(float(r[7]) for r in rows)
+        else:
+            # No snapshot — compute on-the-fly
+            conn.close()
+            period_date = datetime.strptime(period, "%Y-%m").date().replace(day=1)
+            result = refresh_cogs_snapshot(company_id, period_date)
+            if result["written"] > 0:
+                return await get_cogs_snapshot(period, company_id, branch_type, flagged_only)
+            total = flagged = 0
+            avg_cogs = avg_usage = total_rev = total_cogs = 0.0
+            rows = []
+
+        return {
+            "period": period,
+            "company_id": company_id,
+            "summary": {
+                "total_branches": total,
+                "flagged_branches": flagged,
+                "avg_cogs_ratio": round(avg_cogs, 1),
+                "avg_usage_ratio": round(avg_usage, 1),
+                "total_revenue": total_rev,
+                "total_cogs": total_cogs,
+            },
+            "data": [
+                {
+                    "branch_id": r[0], "branch_esb_id": r[1], "branch_code": r[2],
+                    "branch_name": r[3], "branch_type": r[4], "period_label": r[5],
+                    "revenue": float(r[6]), "cogs": float(r[7]),
+                    "cogs_ratio": float(r[8]), "target_cogs_ratio": float(r[9]),
+                    "gap": float(r[10]), "teoretis_usage": float(r[11]),
+                    "actual_usage": float(r[12]), "usage_ratio": float(r[13]),
+                    "flagged": r[14], "trend": r[15],
+                    "last_updated": r[16], "refreshed_at": r[17],
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/v1/analysis/usage-ratio")
+async def get_usage_ratio(
+    period: str,
+    company_id: int = 1,
+    branch_id: typing.Optional[int] = None,
+    flagged_only: bool = False,
+    limit: int = 200,
+):
+    """Pre-computed usage ratio from esb_data.analysis_usage_ratio.
+
+    Shows per-product actual vs theoretical material consumption.
+    """
+    from app.services.aggregation import refresh_usage_ratio
+    from datetime import datetime
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        where = "WHERE u.company_id = %s AND u.period_label = %s"
+        params = [company_id, period]
+        if branch_id:
+            where += " AND u.branch_id = %s"
+            params.append(branch_id)
+        if flagged_only:
+            where += " AND u.flagged = TRUE"
+
+        cur.execute(f"""
+            SELECT u.branch_id, u.branch_code, u.branch_name,
+                   u.period_label, u.product_code, u.product_name,
+                   u.category_name, u.teoretis_qty, u.actual_qty,
+                   u.usage_ratio, u.efficiency_pct, u.flagged
+            FROM esb_data.analysis_usage_ratio u
+            {where}
+            ORDER BY u.branch_name, u.product_name
+            LIMIT %s
+        """, params + [min(limit, 1000)])
+        rows = cur.fetchall()
+
+        if rows:
+            total = len(rows)
+            flagged = sum(1 for r in rows if r[11])
+            avg_ratio = sum(float(r[9]) for r in rows) / total
+        else:
+            conn.close()
+            period_date = datetime.strptime(period, "%Y-%m").date().replace(day=1)
+            result = refresh_usage_ratio(company_id, period_date)
+            if result["written"] > 0:
+                return await get_usage_ratio(period, company_id, branch_id, flagged_only, limit)
+            total = flagged = 0
+            avg_ratio = 0.0
+            rows = []
+
+        return {
+            "period": period,
+            "company_id": company_id,
+            "branch_id": branch_id,
+            "summary": {
+                "total_products": total,
+                "flagged_products": flagged,
+                "avg_usage_ratio": round(avg_ratio, 1),
+            },
+            "data": [
+                {
+                    "branch_id": r[0], "branch_code": r[1], "branch_name": r[2],
+                    "period_label": r[3], "product_code": r[4],
+                    "product_name": r[5], "category_name": r[6],
+                    "teoretis_qty": float(r[7]), "actual_qty": float(r[8]),
+                    "usage_ratio": float(r[9]), "efficiency_pct": float(r[10]),
+                    "flagged": r[11],
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        cur.close()
+        conn.close()

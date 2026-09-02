@@ -23,6 +23,8 @@ import redis as redis_lib
 import os
 
 from app.core.db import get_db_connection
+from app.core.worker import celery_app
+from celery import Task
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CACHE_TTL_SECONDS = 300  # 5 minutes
@@ -760,3 +762,436 @@ def invalidate_master_cache():
     """Invalidate master data cache."""
     _invalidate_cache("parallel:master*")
     _invalidate_cache("parallel:integration_hub*")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 5: Analysis Snapshot Refresh
+# Replaces ad-hoc COGS queries with pre-computed daily snapshots
+# Called by Celery task: queue_report, after delta sync completes
+# ─────────────────────────────────────────────────────────────────────────
+
+def refresh_cogs_snapshot(company_id: int, period: date) -> dict:
+    """Compute and store COGS ratio metrics for all active branches for one period.
+
+    Algorithm mirrors cogs_ratio.py but materializes the result:
+    - revenue     = SUM(report_pos_sales_head.net_total) for the month
+    - cogs       = SUM(stock_movements.qty * products.cost_price)
+                    WHERE movement_type IN ('USAGE', 'WASTE', 'TRANSFER_OUT')
+    - teoretis   = SUM(POS_line.qty * SUM(bom_material.qty))
+                    FROM report_pos_sales joined with bom_material
+    - actual     = same as cogs (already computed)
+    - usage_ratio = actual / teoretis * 100
+    - flagged    = usage_ratio > 110 OR cogs_ratio > target + 10
+
+    Args:
+        company_id: Company ID
+        period: First day of the month to compute (e.g. date(2026, 8, 1) for Aug 2026)
+
+    Returns:
+        dict with keys: written, skipped, errors
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    period_label = period.strftime("%Y-%m")
+    written = 0
+    skipped = 0
+    errors = []
+    try:
+        # Fetch active branches for this company
+        cur.execute("""
+            SELECT b.id, b.esb_id, b.code, b.name,
+                   COALESCE(bt.name, b.type_) AS branch_type
+            FROM esb_data.master_branch b
+            LEFT JOIN esb_data.master_branch_type bt ON b.branch_type_id = bt.id
+            WHERE b.company_id = %s AND b.is_active = TRUE
+        """, (company_id,))
+        branches = cur.fetchall()
+
+        for branch in branches:
+            branch_id, branch_esb_id, branch_code, branch_name, branch_type = branch
+            try:
+                # Revenue from POS sales
+                cur.execute("""
+                    SELECT COALESCE(SUM(net_total), 0) AS revenue, MAX(synced_at)
+                    FROM esb_data.report_pos_sales_head
+                    WHERE company_id = %s AND branch_id = %s
+                      AND DATE_TRUNC('month', sales_date) = %s
+                """, (company_id, branch_id, period))
+                row = cur.fetchone()
+                revenue = float(row[0]) if row else 0
+                last_sync = row[1] if row and row[1] else None
+
+                if revenue == 0:
+                    skipped += 1
+                    continue
+
+                # COGS from stock movements (usage + waste + transfer_out × cost_price)
+                cur.execute("""
+                    SELECT COALESCE(SUM(sm.qty * COALESCE(p.cost_price, 0)), 0)
+                    FROM esb_data.stock_movements sm
+                    JOIN esb_data.products p ON sm.product_id = p.product_id
+                    WHERE sm.company_id = %s AND sm.branch_id = %s
+                      AND DATE_TRUNC('month', sm.created_at) = %s
+                      AND sm.movement_type IN ('USAGE', 'WASTE', 'TRANSFER_OUT')
+                """, (company_id, branch_id, period))
+                cogs = float(cur.fetchone()[0] or 0)
+
+                # Theoretical usage from BOM × POS sales
+                cur.execute("""
+                    SELECT COALESCE(SUM(
+                        shl.qty * COALESCE(
+                            (SELECT SUM(bm.qty * bm.uom_qty)
+                             FROM esb_data.master_bom_material bm
+                             WHERE bm.material_product_esb_id = shl.product_esb_id),
+                            0
+                        )
+                    ), 0)
+                    FROM esb_data.report_pos_sales_head sh
+                    JOIN esb_data.report_pos_sales shl ON sh.id = shl.head_id
+                    WHERE sh.company_id = %s AND sh.branch_id = %s
+                      AND DATE_TRUNC('month', sh.sales_date) = %s
+                """, (company_id, branch_id, period))
+                teoretis_usage = float(cur.fetchone()[0] or 0)
+
+                # Actual usage = COGS (same monetary value)
+                actual_usage = cogs
+
+                # Derived metrics
+                cogs_ratio = round((cogs / revenue * 100), 2) if revenue > 0 else 0
+                target_cogs = 65.0
+                gap = round(cogs_ratio - target_cogs, 2)
+                usage_ratio = round((actual_usage / teoretis_usage * 100), 2) if teoretis_usage > 0 else 0
+                flagged = usage_ratio > 110 or cogs_ratio > target_cogs + 10
+
+                if cogs_ratio > target_cogs + 5:
+                    trend = "up"
+                elif cogs_ratio < target_cogs - 5:
+                    trend = "down"
+                else:
+                    trend = "flat"
+
+                cur.execute("""
+                    INSERT INTO esb_data.analysis_cogs_snapshot
+                        (company_id, branch_id, branch_esb_id, branch_code, branch_name,
+                         branch_type, period, period_label, revenue, cogs, cogs_ratio,
+                         target_cogs_ratio, gap, teoretis_usage, actual_usage, usage_ratio,
+                         flagged, trend, last_updated, refreshed_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                    ON CONFLICT (company_id, branch_id, period) DO UPDATE SET
+                        revenue = EXCLUDED.revenue, cogs = EXCLUDED.cogs,
+                        cogs_ratio = EXCLUDED.cogs_ratio, gap = EXCLUDED.gap,
+                        teoretis_usage = EXCLUDED.teoretis_usage,
+                        actual_usage = EXCLUDED.actual_usage,
+                        usage_ratio = EXCLUDED.usage_ratio, flagged = EXCLUDED.flagged,
+                        trend = EXCLUDED.trend, last_updated = EXCLUDED.last_updated,
+                        refreshed_at = NOW()
+                """, (company_id, branch_id, branch_esb_id, branch_code, branch_name,
+                       branch_type, period, period_label, revenue, cogs, cogs_ratio,
+                       target_cogs, gap, teoretis_usage, actual_usage, usage_ratio,
+                       flagged, trend, last_sync))
+                written += 1
+            except Exception as e:
+                errors.append(f"branch {branch_id}: {str(e)[:100]}")
+
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+    return {"company_id": company_id, "period": period_label,
+            "written": written, "skipped": skipped, "errors": errors}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Celery Tasks (queue_report)
+# ─────────────────────────────────────────────────────────────────────────
+
+@celery_app.task(name="app.services.aggregation.refresh_cogs_snapshot_task",
+                 bind=True, max_retries=3, default_retry_delay=60)
+def refresh_cogs_snapshot_task(self: Task, company_id: int, period_str: str) -> dict:
+    """Refresh COGS snapshot for one company and one period.
+
+    Args:
+        company_id: Company ID
+        period_str: Period as 'YYYY-MM' string
+
+    Retry: 3x with 60s backoff on failure.
+    """
+    try:
+        from datetime import datetime
+        period = datetime.strptime(period_str, "%Y-%m").date().replace(day=1)
+    except ValueError as e:
+        return {"error": f"Invalid period format {period_str}: {e}"}
+    try:
+        result = refresh_cogs_snapshot(company_id, period)
+        if result["errors"]:
+            raise RuntimeError(f"{len(result['errors'])} branch errors: {result['errors'][:2]}")
+        return result
+    except Exception as exc:
+        raise self.retry(exc=exc) from exc
+
+
+@celery_app.task(name="app.services.aggregation.refresh_usage_ratio_task",
+                 bind=True, max_retries=3, default_retry_delay=60)
+def refresh_usage_ratio_task(self: Task, company_id: int, period_str: str) -> dict:
+    """Refresh usage ratio for one company and one period."""
+    try:
+        from datetime import datetime
+        period = datetime.strptime(period_str, "%Y-%m").date().replace(day=1)
+    except ValueError as e:
+        return {"error": f"Invalid period format {period_str}: {e}"}
+    try:
+        result = refresh_usage_ratio(company_id, period)
+        if result["errors"]:
+            raise RuntimeError(f"{len(result['errors'])} branch errors: {result['errors'][:2]}")
+        return result
+    except Exception as exc:
+        raise self.retry(exc=exc) from exc
+
+
+@celery_app.task(name="app.services.aggregation.refresh_all_analysis")
+def refresh_all_analysis(period_str: str) -> dict:
+    """Refresh all analysis snapshots for all active companies for one period.
+
+    Dispatches one pair of (cogs + usage_ratio) tasks per company.
+    Designed to run after delta sync completes (daily, queue_report).
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM company_configs WHERE is_active = TRUE")
+        companies = [row[0] for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+    results = []
+    for cid in companies:
+        cogs_result = refresh_cogs_snapshot_task.delay(cid, period_str)
+        usage_result = refresh_usage_ratio_task.delay(cid, period_str)
+        results.append({
+            "company_id": cid,
+            "cogs": cogs_result.id,
+            "usage_ratio": usage_result.id,
+        })
+
+    return {
+        "period": period_str,
+        "companies_dispatched": len(companies),
+        "tasks": results,
+    }
+
+
+def refresh_usage_ratio(company_id: int, period: date) -> dict:
+    """Compute and store per-product usage ratio for all active branches.
+
+    Compares actual material consumption (stock movements) against
+    theoretical amounts derived from BOM × POS sales quantities.
+
+    Args:
+        company_id: Company ID
+        period: First day of the month (e.g. date(2026, 8, 1))
+
+    Returns:
+        dict with keys: written, skipped, errors
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    period_label = period.strftime("%Y-%m")
+    written = 0
+    skipped = 0
+    errors = []
+    try:
+        # Fetch active branches
+        cur.execute("""
+            SELECT b.id, b.esb_id, b.code, b.name,
+                   COALESCE(bt.name, b.type_) AS branch_type
+            FROM esb_data.master_branch b
+            LEFT JOIN esb_data.master_branch_type bt ON b.branch_type_id = bt.id
+            WHERE b.company_id = %s AND b.is_active = TRUE
+        """, (company_id,))
+        branches = cur.fetchall()
+
+        for branch in branches:
+            branch_id, branch_esb_id, branch_code, branch_name, branch_type = branch
+            try:
+                # Per-product theoretical vs actual consumption
+                cur.execute("""
+                    SELECT
+                        p.id             AS product_id,
+                        p.esb_id         AS product_esb_id,
+                        p.code           AS product_code,
+                        p.name           AS product_name,
+                        c.name           AS category_name,
+                        -- Theoretical: POS qty × BOM material qty
+                        COALESCE(SUM(
+                            shl.qty * COALESCE(
+                                (SELECT SUM(bm.qty * bm.uom_qty)
+                                 FROM esb_data.master_bom_material bm
+                                 WHERE bm.material_product_esb_id = shl.product_esb_id),
+                                0
+                            )
+                        ), 0) AS teoretis_qty,
+                        -- Actual: stock movement qty for this product/branch/month
+                        COALESCE(SUM(
+                            CASE WHEN sm.movement_type IN ('USAGE','WASTE','TRANSFER_OUT')
+                                 THEN sm.qty ELSE 0 END
+                        ), 0) AS actual_qty,
+                        -- Theoretical cost
+                        COALESCE(SUM(
+                            shl.qty * COALESCE(
+                                (SELECT SUM(bm.qty * bm.hpp * bm.uom_qty)
+                                 FROM esb_data.master_bom_material bm
+                                 WHERE bm.material_product_esb_id = shl.product_esb_id),
+                                0
+                            )
+                        ), 0) AS teoretis_cost,
+                        -- Actual cost = stock movement qty × product cost_price
+                        COALESCE(SUM(
+                            CASE WHEN sm.movement_type IN ('USAGE','WASTE','TRANSFER_OUT')
+                                 THEN sm.qty * COALESCE(p.cost_price, 0) ELSE 0 END
+                        ), 0) AS actual_cost
+                    FROM esb_data.report_pos_sales_head sh
+                    JOIN esb_data.report_pos_sales shl ON sh.id = shl.head_id
+                    JOIN esb_data.products p ON shl.product_id = p.id
+                    LEFT JOIN esb_data.master_category c ON p.category_id = c.id
+                    LEFT JOIN esb_data.stock_movements sm
+                        ON sm.product_id = p.id AND sm.branch_id = %s
+                           AND DATE_TRUNC('month', sm.created_at) = %s
+                           AND sm.movement_type IN ('USAGE', 'WASTE', 'TRANSFER_OUT')
+                    WHERE sh.company_id = %s AND sh.branch_id = %s
+                      AND DATE_TRUNC('month', sh.sales_date) = %s
+                    GROUP BY p.id, p.esb_id, p.code, p.name, c.name
+                    HAVING SUM(shl.qty) > 0
+                """, (branch_id, period, company_id, branch_id, period))
+                rows = cur.fetchall()
+
+                if not rows:
+                    skipped += 1
+                    continue
+
+                for row in rows:
+                    (prod_id, prod_esb_id, prod_code, prod_name, cat_name,
+                     teoretis_qty, actual_qty, teoretis_cost, actual_cost) = row
+                    teoretis_qty = float(teoretis_qty or 0)
+                    actual_qty = float(actual_qty or 0)
+                    teoretis_cost = float(teoretis_cost or 0)
+                    actual_cost = float(actual_cost or 0)
+
+                    usage_ratio = round((actual_qty / teoretis_qty * 100), 2) if teoretis_qty > 0 else 0
+                    deviation = abs(actual_qty - teoretis_qty) / teoretis_qty if teoretis_qty > 0 else 0
+                    efficiency_pct = round((1 - deviation) * 100, 2)
+                    flagged = usage_ratio > 110 or usage_ratio < 90
+
+                    cur.execute("""
+                        INSERT INTO esb_data.analysis_usage_ratio
+                            (company_id, branch_id, branch_esb_id, branch_code, branch_name,
+                             branch_type, period, period_label, product_id, product_esb_id,
+                             product_code, product_name, category_name, teoretis_qty, actual_qty,
+                             teoretis_cost, actual_cost, usage_ratio, efficiency_pct, flagged, refreshed_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                        ON CONFLICT (company_id, branch_id, product_id, period) DO UPDATE SET
+                            teoretis_qty = EXCLUDED.teoretis_qty,
+                            actual_qty = EXCLUDED.actual_qty,
+                            teoretis_cost = EXCLUDED.teoretis_cost,
+                            actual_cost = EXCLUDED.actual_cost,
+                            usage_ratio = EXCLUDED.usage_ratio,
+                            efficiency_pct = EXCLUDED.efficiency_pct,
+                            flagged = EXCLUDED.flagged,
+                            refreshed_at = NOW()
+                    """, (company_id, branch_id, branch_esb_id, branch_code, branch_name,
+                          branch_type, period, period_label, prod_id, prod_esb_id,
+                          prod_code, prod_name, cat_name, teoretis_qty, actual_qty,
+                          teoretis_cost, actual_cost, usage_ratio, efficiency_pct, flagged))
+                    written += 1
+            except Exception as e:
+                errors.append(f"branch {branch_id}: {str(e)[:100]}")
+
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+    return {"company_id": company_id, "period": period_label,
+            "written": written, "skipped": skipped, "errors": errors}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Celery Tasks (queue_report)
+# ─────────────────────────────────────────────────────────────────────────
+
+@celery_app.task(name="app.services.aggregation.refresh_cogs_snapshot_task",
+                 bind=True, max_retries=3, default_retry_delay=60)
+def refresh_cogs_snapshot_task(self: Task, company_id: int, period_str: str) -> dict:
+    """Refresh COGS snapshot for one company and one period.
+
+    Args:
+        company_id: Company ID
+        period_str: Period as 'YYYY-MM' string
+
+    Retry: 3x with 60s backoff on failure.
+    """
+    try:
+        from datetime import datetime
+        period = datetime.strptime(period_str, "%Y-%m").date().replace(day=1)
+    except ValueError as e:
+        return {"error": f"Invalid period format {period_str}: {e}"}
+    try:
+        result = refresh_cogs_snapshot(company_id, period)
+        if result["errors"]:
+            raise RuntimeError(f"{len(result['errors'])} branch errors: {result['errors'][:2]}")
+        return result
+    except Exception as exc:
+        raise self.retry(exc=exc) from exc
+
+
+@celery_app.task(name="app.services.aggregation.refresh_usage_ratio_task",
+                 bind=True, max_retries=3, default_retry_delay=60)
+def refresh_usage_ratio_task(self: Task, company_id: int, period_str: str) -> dict:
+    """Refresh usage ratio for one company and one period."""
+    try:
+        from datetime import datetime
+        period = datetime.strptime(period_str, "%Y-%m").date().replace(day=1)
+    except ValueError as e:
+        return {"error": f"Invalid period format {period_str}: {e}"}
+    try:
+        result = refresh_usage_ratio(company_id, period)
+        if result["errors"]:
+            raise RuntimeError(f"{len(result['errors'])} branch errors: {result['errors'][:2]}")
+        return result
+    except Exception as exc:
+        raise self.retry(exc=exc) from exc
+
+
+@celery_app.task(name="app.services.aggregation.refresh_all_analysis")
+def refresh_all_analysis(period_str: str) -> dict:
+    """Refresh all analysis snapshots for all active companies for one period.
+
+    Dispatches one pair of (cogs + usage_ratio) tasks per company.
+    Designed to run after delta sync completes (daily, queue_report).
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM company_configs WHERE is_active = TRUE")
+        companies = [row[0] for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+    results = []
+    for cid in companies:
+        cogs_result = refresh_cogs_snapshot_task.delay(cid, period_str)
+        usage_result = refresh_usage_ratio_task.delay(cid, period_str)
+        results.append({
+            "company_id": cid,
+            "cogs": cogs_result.id,
+            "usage_ratio": usage_result.id,
+        })
+
+    return {
+        "period": period_str,
+        "companies_dispatched": len(companies),
+        "tasks": results,
+    }
+

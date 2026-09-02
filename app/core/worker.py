@@ -63,6 +63,10 @@ celery_app.conf.task_routes = {
     'app.services.reports.sync_pos_sales': {'queue': 'queue_report'},
     'app.services.reports.sync_pos_sales_backfill': {'queue': 'queue_report'},
     'app.services.reports.sync_pos_sales_recovery': {'queue': 'queue_report'},
+    # Phase 5: Analysis snapshot refresh (runs after delta sync completes)
+    'app.services.aggregation.refresh_cogs_snapshot_task': {'queue': 'queue_report'},
+    'app.services.aggregation.refresh_usage_ratio_task': {'queue': 'queue_report'},
+    'app.services.aggregation.refresh_all_analysis': {'queue': 'queue_report'},
     'app.services.export_engine.generate_export': {'queue': 'queue_export'},
 }
 
