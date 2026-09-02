@@ -1963,3 +1963,200 @@ async def get_dashboard_summary(period: str):
     finally:
         cur.close()
         conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# SALES REPORTING ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/sales/recap-detail")
+async def get_sales_recap_detail(
+    period: str,
+    branch_code: str = None,
+    limit: int = 500,
+    offset: int = 0,
+):
+    """
+    Sales line-item detail from esb_data.report_pos_sales.
+
+    Parameters:
+    - period: YYYY-MM format
+    - branch_code: optional filter
+    - limit: max rows (default 500)
+    - offset: pagination offset
+    """
+    from app.core.db import get_db_connection
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        where = "WHERE l.company_id = 1 AND TO_CHAR(l.sales_date, 'YYYY-MM') = %s"
+        params: list = [period]
+
+        if branch_code:
+            where += " AND h.branch_code = %s"
+            params.append(branch_code)
+
+        cur.execute(f"""
+            SELECT
+                l.id,
+                l.sales_num,
+                TO_CHAR(l.sales_date, 'YYYY-MM-DD') AS sales_date,
+                COALESCE(h.branch_code, '') AS branch_code,
+                COALESCE(l.menu_code, '') AS menu_code,
+                COALESCE(l.menu_name, '') AS menu_name,
+                COALESCE(l.menu_category_name, '') AS category_name,
+                l.qty,
+                COALESCE(l.price, 0) AS price,
+                COALESCE(l.discount, 0) AS discount,
+                l.total,
+                COALESCE(l.cost, 0) AS cost,
+                COALESCE(l.cost * l.qty, 0) AS cogs,
+                COALESCE(l.synced_at::text, '') AS synced_at
+            FROM esb_data.report_pos_sales l
+            JOIN esb_data.report_pos_sales_head h
+              ON h.company_id = l.company_id AND h.sales_num = l.sales_num
+            {where}
+            ORDER BY l.sales_date DESC, l.sales_num
+            LIMIT %s OFFSET %s
+        """, params + [min(limit, 2000), offset])
+        rows = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT COUNT(*) AS total
+            FROM esb_data.report_pos_sales l
+            JOIN esb_data.report_pos_sales_head h
+              ON h.company_id = l.company_id AND h.sales_num = l.sales_num
+            {where}
+        """, params)
+        total = cur.fetchone()["total"]
+
+        return rows
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/v1/sales/recap-head")
+async def get_sales_recap_head(
+    period: str,
+    branch_code: str = None,
+    limit: int = 500,
+    offset: int = 0,
+):
+    """
+    Sales transaction header (receipt-level) from esb_data.report_pos_sales_head.
+
+    Parameters:
+    - period: YYYY-MM format
+    - branch_code: optional filter
+    - limit: max rows (default 500)
+    - offset: pagination offset
+    """
+    from app.core.db import get_db_connection
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        where = "WHERE company_id = 1 AND TO_CHAR(sales_date, 'YYYY-MM') = %s"
+        params: list = [period]
+
+        if branch_code:
+            where += " AND branch_code = %s"
+            params.append(branch_code)
+
+        cur.execute(f"""
+            SELECT
+                sales_num,
+                TO_CHAR(sales_date, 'YYYY-MM-DD') AS sales_date,
+                branch_code,
+                grand_total,
+                (SELECT COUNT(*) FROM esb_data.report_pos_sales d
+                 WHERE d.company_id = report_pos_sales_head.company_id
+                   AND d.sales_num = report_pos_sales_head.sales_num) AS total_items,
+                COALESCE(payment_method, 'cash') AS payment_method,
+                synced_at::text AS synced_at
+            FROM esb_data.report_pos_sales_head
+            {where}
+            ORDER BY sales_date DESC, sales_num
+            LIMIT %s OFFSET %s
+        """, params + [min(limit, 2000), offset])
+        rows = [dict(r) for r in cur.fetchall()]
+
+        cur.execute(f"""
+            SELECT COUNT(*) AS total
+            FROM esb_data.report_pos_sales_head
+            {where}
+        """, params)
+        total = cur.fetchone()["total"]
+
+        return rows
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/v1/sales/summary")
+async def get_sales_summary(period: str):
+    """
+    Aggregated sales summary for a period.
+
+    Returns total revenue, transactions, items, and average ticket size.
+    """
+    from app.core.db import get_db_connection
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT
+                COUNT(DISTINCT h.sales_num) AS total_transactions,
+                COUNT(l.sales_num) AS total_items,
+                COALESCE(SUM(l.qty), 0) AS total_qty,
+                COALESCE(SUM(h.grand_total), 0) AS total_revenue
+            FROM esb_data.report_pos_sales_head h
+            LEFT JOIN esb_data.report_pos_sales l
+              ON l.company_id = h.company_id AND l.sales_num = h.sales_num
+            WHERE h.company_id = 1
+              AND TO_CHAR(h.sales_date, 'YYYY-MM') = %s
+        """, (period,))
+        row = dict(cur.fetchone())
+
+        total_tx = int(row["total_transactions"] or 0)
+        total_rev = float(row["total_revenue"] or 0)
+        avg_ticket = total_rev / total_tx if total_tx > 0 else 0
+
+        # Per-branch breakdown
+        cur.execute("""
+            SELECT
+                h.branch_code,
+                h.branch_name,
+                COUNT(DISTINCT h.sales_num) AS transactions,
+                COALESCE(SUM(h.grand_total), 0) AS revenue
+            FROM esb_data.report_pos_sales_head h
+            WHERE h.company_id = 1
+              AND TO_CHAR(h.sales_date, 'YYYY-MM') = %s
+            GROUP BY h.branch_code, h.branch_name
+            ORDER BY revenue DESC
+        """, (period,))
+        branches = [dict(r) for r in cur.fetchall()]
+
+        return {
+            "totalRevenue": total_rev,
+            "totalTransactions": total_tx,
+            "totalItems": int(row["total_items"] or 0),
+            "totalQty": float(row["total_qty"] or 0),
+            "avgTicketSize": round(avg_ticket, 0),
+            "branchBreakdown": [
+                {
+                    "branchCode": b["branch_code"],
+                    "branchName": b["branch_name"],
+                    "transactions": int(b["transactions"]),
+                    "revenue": float(b["revenue"]),
+                }
+                for b in branches
+            ],
+        }
+    finally:
+        cur.close()
+        conn.close()
