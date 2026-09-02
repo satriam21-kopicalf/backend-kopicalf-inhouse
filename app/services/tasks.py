@@ -427,7 +427,9 @@ def _normalize(entity: str, item: dict, esb_id: str, company_id: int):
                                   item.get("categoryTypeName"), bool(item.get("flagActive", 1)),
                                   item.get("categoryTypeID"), item.get("notes"), json.dumps(item)))
     if entity == "PRODUCT_SUB_CATEGORY":
-        return ("esb_data.master_sub_category", (esb_id, company_id, None, None, item.get("subCategoryName"),
+        return ("esb_data.master_sub_category", (esb_id, company_id,
+                                      item.get("categoryID"), item.get("subCategoryCode"),
+                                      item.get("subCategoryName"),
                                       bool(item.get("flagActive", 1)), item.get("deadStockThreshold"), item.get("notes"), json.dumps(item)))
     if entity == "PRODUCT_UNIT":
         return ("esb_data.master_unit", (esb_id, company_id, item.get("metricName"), item.get("uomName"),
@@ -721,14 +723,16 @@ def sync_endpoint_data(company_id: int, client: ESBClient, entity: str, path: st
 
 
 def _sync_product_details(company_id: int, client: ESBClient):
-    """Pull /product/{id} details (productDetails array) into md_product_details."""
+    """Pull /product/{id} details (productDetails array) into esb_data.master_product_detail."""
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=DictCursor)
     try:
+        # Read from esb_data.master_product (not public.md_products)
         cur.execute("""
-            SELECT esb_id FROM md_products WHERE company_id = %s
+            SELECT esb_id FROM esb_data.master_product WHERE company_id = %s
               AND NOT EXISTS (
-                SELECT 1 FROM md_product_details d WHERE d.company_id = %s AND d.product_esb_id = md_products.esb_id
+                SELECT 1 FROM esb_data.master_product_detail d
+                WHERE d.company_id = %s AND d.product_esb_id = esb_data.master_product.esb_id
               )
         """, (company_id, company_id))
         ids = [r['esb_id'] for r in cur.fetchall()]
@@ -740,19 +744,25 @@ def _sync_product_details(company_id: int, client: ESBClient):
                 for pd in result.get("productDetails") or []:
                     rows.append((
                         str(pd.get("productDetailID")), company_id, esb_id,
-                        pd.get("uomID"), pd.get("metricID"), pd.get("uomName"),
+                        str(pd.get("uomID")) if pd.get("uomID") else None,
+                        str(pd.get("metricID")) if pd.get("metricID") else None,
+                        pd.get("uomName"),
                         pd.get("qty"), pd.get("basePrice"), pd.get("SKU"),
                         bool(pd.get("isBase")), bool(pd.get("isStock")), bool(pd.get("isPurchase")),
-                        bool(pd.get("isTransfer")), bool(pd.get("isSales")), bool(pd.get("flagActive", True))))
+                        bool(pd.get("isTransfer")), bool(pd.get("isSales")), bool(pd.get("flagActive", True)),
+                        pd.get("raw_data", {})))
                 if rows:
                     execute_values(cur, """
-                        INSERT INTO md_product_details (esb_id, company_id, product_esb_id, uom_id, metric_id,
-                            uom_name, qty, base_price, sku, is_base, is_stock, is_purchase, is_transfer, is_sales, flag_active, raw_data)
+                        INSERT INTO esb_data.master_product_detail
+                            (esb_id, company_id, product_esb_id, uom_id, metric_id,
+                             uom_name, qty, base_price, sku, is_base, is_stock, is_purchase,
+                             is_transfer, is_sales, flag_active, raw_data, synced_at)
                         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
                             qty=EXCLUDED.qty, base_price=EXCLUDED.base_price, sku=EXCLUDED.sku,
                             is_base=EXCLUDED.is_base, is_stock=EXCLUDED.is_stock, is_purchase=EXCLUDED.is_purchase,
                             is_transfer=EXCLUDED.is_transfer, is_sales=EXCLUDED.is_sales,
-                            flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data, updated_at=NOW()
+                            flag_active=EXCLUDED.flag_active, raw_data=EXCLUDED.raw_data,
+                            updated_at=NOW(), synced_at=NOW()
                     """, rows)
                     conn.commit()
             except Exception:
