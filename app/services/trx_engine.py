@@ -27,6 +27,7 @@ from datetime import datetime, timezone, date, timedelta
 
 import redis as redis_lib
 from psycopg2.extras import execute_values, RealDictCursor
+from app.services.operational_window import is_within_operational_window
 
 from app.core.worker import celery_app
 from app.core.db import get_db_connection
@@ -612,6 +613,9 @@ def _due_trx_entities(cur) -> list:
 @celery_app.task(bind=True, name="app.services.trx_engine.delta_sync_trx")
 def delta_sync_trx(self):
     """Daily delta for all companies (sequential) for TRX entities that are due."""
+    if not is_within_operational_window():
+        return "Outside operational window (03:00-08:00 WIB) - delta sync skipped"
+    
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
@@ -689,6 +693,9 @@ def realtime_sync_trx(self):
     """Real-time sync for all companies: pulls T-0 (current day) data every 5 minutes.
     This ensures today's transactions are available immediately without waiting for
     the daily delta or historical backfill lanes."""
+    if not is_within_operational_window():
+        return "Outside operational window (03:00-08:00 WIB) - realtime sync skipped"
+    
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
@@ -746,10 +753,31 @@ def realtime_sync_trx(self):
 def backfill_entity(self, company_id: int, entity: str):
     """Process up to MAX_MONTHS_PER_RUN months for one (company, entity), then
     re-enqueue itself while work remains. Lane A runs continuously 24/7."""
+    if not is_within_operational_window():
+        return "Outside operational window (03:00-08:00 WIB) - backfill paused"
+    
     if entity not in TRX_INDEX_VIEW:
         return f"Unknown entity {entity}"
+    # Phase 1 priorities: COGS + usage ratio analysis entities
+    # Added 2026-09-02: ITEM_JOURNAL, PURCHASE_INVOICE, GOODS_RECEIPT, GOODS_DELIVERY,
+    # PURCHASE_ORDER, SIMPLE_MANUFACTURING, PURCHASE_RETURN, GOODS_RECEIPT_RETURN, STOCK_OPNAME
     priority_entities = (
-        "PRODUCT_SALES", "RPT_GOODS_RECEIPT_RECAPITULATION"
+        # Sales transactions (COGS analysis)
+        "PRODUCT_SALES",
+        # Purchase transactions (COGS purchase cost)
+        "PURCHASE_INVOICE",
+        "GOODS_RECEIPT",
+        "PURCHASE_ORDER",
+        "PURCHASE_RETURN",
+        "GOODS_RECEIPT_RETURN",
+        # Manufacturing (COGS production cost)
+        "SIMPLE_MANUFACTURING",
+        # Inventory movements (usage ratio)
+        "ITEM_JOURNAL",
+        "GOODS_DELIVERY",
+        "STOCK_OPNAME",
+        # Report (GR Recap - already active)
+        "RPT_GOODS_RECEIPT_RECAPITULATION",
     )
     if entity not in priority_entities:
         return f"Temporarily paused non-priority TRX entity {entity}"
@@ -867,6 +895,9 @@ def backfill_entity(self, company_id: int, entity: str):
 def backfill_router():
     """Lane A router: dispatches historical backfill every 25 minutes for every
     company x entity not yet converged."""
+    if not is_within_operational_window():
+        return "Outside operational window (03:00-08:00 WIB) - backfill router skipped"
+    
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
@@ -888,7 +919,7 @@ def backfill_router():
         dispatched = []
         for company_id in companies:
             company_pending = 0
-            
+
             # Count pending entities for this company
             for entity in TRX_INDEX_VIEW:
                 wm = _get_watermark(cur, company_id, entity, "backfill")
@@ -898,17 +929,15 @@ def backfill_router():
                 wm = _get_watermark(cur, company_id, entity, "backfill")
                 if not wm or wm.get("status") != "done":
                     company_pending += 1
-            
-            # If the company is locked (actively running), we just wait.
-            # We DO NOT dispatch anything, but we also MUST NOT move to the next company
-            # because this company is still pending!
+
+            # If the company is locked (actively running), skip it and continue to next company
+            # This ensures all unlocked companies get processed even if some are running
             if _company_locked(company_id):
-                if company_pending > 0:
-                    break  # Stop here, wait for this company to finish
+                print(f"Company {company_id} is locked, skipping to next company...")
                 continue
-                
+
             # If we reach here, the company is NOT locked.
-            # Let's dispatch pending entities.
+            # Let's dispatch pending entities for this company.
             for entity in TRX_INDEX_VIEW:
                 wm = _get_watermark(cur, company_id, entity, "backfill")
                 if not wm or not wm["watermark_date"] or wm["watermark_date"] < converge_to:
@@ -917,16 +946,12 @@ def backfill_router():
                         continue
                     backfill_entity.delay(company_id, entity)
                     dispatched.append(f"{company_id}:{entity}")
-                    
+
             for entity in RPT_DIRECT:
                 wm = _get_watermark(cur, company_id, entity, "backfill")
                 if not wm or wm.get("status") != "done":
                     rpt_backfill_entity.delay(company_id, entity)
                     dispatched.append(f"{company_id}:{entity}")
-                    
-            # SEQUENTIAL GATE: Do not move to the next company until this one is 100% converged
-            if company_pending > 0:
-                break
                 
         return f"Dispatched {len(dispatched)}: {dispatched}"
     finally:
@@ -978,6 +1003,9 @@ def completeness_audit():
     watermark has passed it, or the bucket falls inside the delta window
     (T-2..T). Buckets in between (backfill not converged yet) are logged as
     PENDING_BACKFILL without re-pull — the nightly backfill owns them."""
+    if not is_within_operational_window():
+        return "Outside operational window (03:00-08:00 WIB) - completeness audit skipped"
+    
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
@@ -1113,6 +1141,9 @@ def sync_direct_reports():
     """DEEP refresh (daily 06:00 WIB): dispatch one per-company report task per
     active company (parallel). Each report entity uses its configured
     window_days (T-7 for stock movement, T-2 for sales-payment summary)."""
+    if not is_within_operational_window():
+        return "Outside operational window (03:00-08:00 WIB) - direct reports skipped"
+    
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
@@ -1135,6 +1166,9 @@ def sync_direct_reports():
 def sync_direct_reports_delta():
     """LIVE delta (every 30 min): dispatch per-company report tasks with a small
     T-1..T window so fresh data lands without re-pulling the whole T-7 range."""
+    if not is_within_operational_window():
+        return "Outside operational window (03:00-08:00 WIB) - direct reports delta skipped"
+    
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
@@ -1158,6 +1192,9 @@ def sync_direct_reports_company(company_id: int, window_days: typing.Optional[in
     """Pull direct period-based reports for ONE company into report_raw_staging
     (idempotent on the existing period+branch unique key). window_days=None
     uses each entity's configured window (deep); an int overrides it (delta)."""
+    if not is_within_operational_window():
+        return "Outside operational window (03:00-08:00 WIB) - direct reports company sync skipped"
+    
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
@@ -1242,11 +1279,19 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
     already-stored period) forward to T-{window_days}, RPT_BACKFILL_CHUNK_DAYS
     per invocation, then re-enqueues itself. Lane A runs continuously 24/7.
     Uses the same per-company Redis lock as TRX backfill."""
+    if not is_within_operational_window():
+        return "Outside operational window (03:00-08:00 WIB) - RPT backfill paused"
+    
     cfg = RPT_DIRECT.get(entity)
     if not cfg:
         return f"Unknown RPT entity {entity}"
+    # Phase 1 priorities: all report entities needed for analysis
+    # Added 2026-09-02: RPT_STOCK_MOVEMENT, RPT_SALES_PAYMENT_SUMMARY
     priority_entities = (
-        "PRODUCT_SALES", "RPT_GOODS_RECEIPT_RECAPITULATION"
+        "PRODUCT_SALES",
+        "RPT_GOODS_RECEIPT_RECAPITULATION",
+        "RPT_STOCK_MOVEMENT",
+        "RPT_SALES_PAYMENT_SUMMARY",
     )
     if entity not in priority_entities:
         return f"Temporarily paused non-priority RPT entity {entity}"
