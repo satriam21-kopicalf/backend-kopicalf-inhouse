@@ -1109,6 +1109,12 @@ RPT_DIRECT: typing.Dict[str, dict] = {
         "params_for": lambda d: {"dateFrom": d.isoformat(), "dateTo": d.isoformat()},
         "window_days": 2,   # yesterday + today (T-2 -> T)
     },
+    # Menu COGS Report - Menu-level cost of goods sold analysis
+    "RPT_MENU_COGS": {
+        "path": "/report/menu-cogs",
+        "params_for": lambda d: {"reportDate": d.isoformat()},
+        "window_days": 2,   # yesterday + today (T-2 -> T)
+    },
 }
 
 
@@ -1134,6 +1140,68 @@ def _iter_rpt_rows(client: ESBClient, cfg: dict, d: date):
             yield r
         page += 1
         time.sleep(PAGE_SLEEP_SECONDS)
+
+
+def _sync_menu_cogs(cur, conn, company_id: int, d: date, rows: list) -> int:
+    """Sync Menu COGS report rows into esb_data.report_menu_cogs.
+
+    The /report/menu-cogs endpoint is undocumented; field names are inferred from
+    the table schema columns (sales_qty, material_cost, total_cogs, etc.).
+    Upserts on (company_id, report_date, branch_esb_id, menu_code)."""
+    from psycopg2.extras import execute_values
+    written = 0
+    records = []
+    for r in rows:
+        branch_code = str(r.get("branchCode") or r.get("branchID") or "")[:50]
+        records.append((
+            company_id,
+            d,
+            branch_code,
+            str(r.get("branchName") or "")[:100],
+            str(r.get("menuName") or r.get("productName") or "")[:200],
+            str(r.get("menuCode") or r.get("productCode") or "")[:50],
+            str(r.get("categoryName") or r.get("category") or "")[:100],
+            float(r.get("salesQty") or r.get("sales_qty") or 0) or 0,
+            float(r.get("salesAmount") or r.get("sales_amount") or 0) or 0,
+            float(r.get("materialCost") or r.get("material_cost") or 0) or 0,
+            float(r.get("laborCost") or r.get("labor_cost") or 0) or 0,
+            float(r.get("overheadCost") or r.get("overhead_cost") or 0) or 0,
+            float(r.get("totalCogs") or r.get("total_cogs") or r.get("cogs") or 0) or 0,
+            float(r.get("cogsPercentage") or r.get("cogs_percentage") or 0) or 0,
+            float(r.get("grossProfit") or r.get("gross_profit") or 0) or 0,
+            float(r.get("grossProfitPercentage") or r.get("gross_profit_percentage") or 0) or 0,
+            json.dumps(r, default=str),
+        ))
+    if not records:
+        return 0
+    execute_values(
+        cur,
+        """
+        INSERT INTO esb_data.report_menu_cogs
+            (company_id, report_date, branch_esb_id, branch_name, menu_name, menu_code,
+             category_name, sales_qty, sales_amount, material_cost, labor_cost, overhead_cost,
+             total_cogs, cogs_percentage, gross_profit, gross_profit_percentage, raw_data, synced_at)
+        VALUES %s
+        ON CONFLICT (company_id, report_date, branch_esb_id, menu_code) DO UPDATE SET
+            branch_name = EXCLUDED.branch_name,
+            category_name = EXCLUDED.category_name,
+            sales_qty = EXCLUDED.sales_qty,
+            sales_amount = EXCLUDED.sales_amount,
+            material_cost = EXCLUDED.material_cost,
+            labor_cost = EXCLUDED.labor_cost,
+            overhead_cost = EXCLUDED.overhead_cost,
+            total_cogs = EXCLUDED.total_cogs,
+            cogs_percentage = EXCLUDED.cogs_percentage,
+            gross_profit = EXCLUDED.gross_profit,
+            gross_profit_percentage = EXCLUDED.gross_profit_percentage,
+            raw_data = EXCLUDED.raw_data,
+            synced_at = EXCLUDED.synced_at
+        """,
+        [(r + (datetime.now(timezone.utc),)) for r in records],
+        template=None,
+    )
+    conn.commit()
+    return len(records)
 
 
 @celery_app.task(name="app.services.trx_engine.sync_direct_reports")
@@ -1287,11 +1355,13 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
         return f"Unknown RPT entity {entity}"
     # Phase 1 priorities: all report entities needed for analysis
     # Added 2026-09-02: RPT_STOCK_MOVEMENT, RPT_SALES_PAYMENT_SUMMARY
+    # Added 2026-09-02: RPT_MENU_COGS - menu-level cost analysis
     priority_entities = (
         "PRODUCT_SALES",
         "RPT_GOODS_RECEIPT_RECAPITULATION",
         "RPT_STOCK_MOVEMENT",
         "RPT_SALES_PAYMENT_SUMMARY",
+        "RPT_MENU_COGS",
     )
     if entity not in priority_entities:
         return f"Temporarily paused non-priority RPT entity {entity}"
@@ -1328,8 +1398,12 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
             start = wm["watermark_date"] + timedelta(days=1)
         else:
             # resume from the earliest staged period if it is newer than BACKFILL_START
-            cur.execute("""SELECT min(period_start) AS d FROM report_raw_staging
-                           WHERE company_id = %s AND report_type = %s""", (company_id, entity))
+            if entity == "RPT_MENU_COGS":
+                cur.execute("""SELECT min(report_date) AS d FROM esb_data.report_menu_cogs
+                               WHERE company_id = %s""", (company_id,))
+            else:
+                cur.execute("""SELECT min(period_start) AS d FROM report_raw_staging
+                               WHERE company_id = %s AND report_type = %s""", (company_id, entity))
             row = cur.fetchone()
             if row and row["d"]:
                 start = min(start, row["d"])
@@ -1354,6 +1428,17 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
             except Exception as e:
                 has_error, err = True, str(e)[:200]
                 break
+
+            # RPT_MENU_COGS uses a dedicated table (esb_data.report_menu_cogs)
+            if entity == "RPT_MENU_COGS":
+                pulled += _sync_menu_cogs(cur, conn, company_id, d, rows)
+                try:
+                    lock.reacquire()
+                except Exception:
+                    pass
+                d += timedelta(days=1)
+                continue
+
             by_branch: typing.Dict[str, list] = {}
             for r in rows:
                 b_code = str(r.get("branchCode") or r.get("branchName") or "")[:50]
