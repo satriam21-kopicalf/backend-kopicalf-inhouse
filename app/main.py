@@ -1457,6 +1457,164 @@ async def get_cogs_ratio(
         raise HTTPException(status_code=500, detail=f"Failed to calculate COGS ratio: {str(e)}")
 
 
+@app.get("/api/v1/cogs-ratio/periods")
+async def get_cogs_ratio_periods():
+    """
+    Get available periods that have COGS data in report_pos_sales_head.
+
+    Returns periods in YYYY-MM format, newest first, up to 12 months back.
+    Falls back to generating months from current date if no data exists.
+    """
+    from app.core.db import get_db_connection
+    from datetime import date, timedelta
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute("""
+            SELECT DISTINCT TO_CHAR(sales_date, 'YYYY-MM') AS period
+            FROM esb_data.report_pos_sales_head
+            ORDER BY period DESC
+            LIMIT 12
+        """)
+        rows = cur.fetchall()
+        periods = [r["period"] for r in rows]
+
+        if not periods:
+            today = date.today()
+            for i in range(12):
+                d = date(today.year, today.month, 1)
+                d = d.replace(month=((d.month - 1 - i - 1) % 12) + 1)
+                year_offset = (today.month - 1 - i - 1) // 12
+                d = d.replace(year=d.year + year_offset)
+                if i == 0:
+                    d = date(today.year, today.month, 1)
+                periods.append(d.strftime("%Y-%m"))
+
+        import calendar
+        result = []
+        for p in periods:
+            year, month = int(p[:4]), int(p[5:7])
+            label = f"{calendar.month_name[month]} {year}"
+            result.append({"value": p, "label": label})
+
+        return result
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/v1/cogs-ratio/trend")
+async def get_cogs_ratio_trend(
+    branch_id: int = None,
+    periods: str = None,
+):
+    """
+    Get COGS ratio trend across multiple periods.
+
+    Parameters:
+    - branch_id: Optional branch ID filter
+    - periods: Optional comma-separated list of YYYY-MM periods (defaults to last 6 months)
+
+    Returns per-period aggregates for trend visualization.
+    """
+    from app.core.db import get_db_connection
+    from datetime import date
+    import calendar
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        period_list = []
+        if periods:
+            period_list = [p.strip() for p in periods.split(",") if p.strip()]
+        else:
+            today = date.today()
+            for i in range(6):
+                m = today.month - i
+                y = today.year
+                while m <= 0:
+                    m += 12
+                    y -= 1
+                period_list.append(f"{y}-{m:02d}")
+            period_list.reverse()
+
+        if not period_list:
+            return []
+
+        cur.execute("""
+            SELECT period_label,
+                   AVG(cogs_ratio) AS avg_cogs_ratio,
+                   AVG(usage_ratio) AS avg_usage_ratio,
+                   SUM(revenue) AS total_revenue,
+                   SUM(cogs) AS total_cogs,
+                   COUNT(*) AS branch_count,
+                   SUM(CASE WHEN flagged THEN 1 ELSE 0 END) AS flagged_branches
+            FROM esb_data.analysis_cogs_snapshot
+            WHERE period_label = ANY(%s)
+              AND (%s::int IS NULL OR branch_id = %s::int)
+            GROUP BY period_label
+            ORDER BY period_label
+        """, (period_list, branch_id, branch_id))
+        snapshot_rows = cur.fetchall()
+
+        if snapshot_rows:
+            result = []
+            for r in snapshot_rows:
+                p = r["period_label"]
+                year, month = int(p[:4]), int(p[5:7])
+                result.append({
+                    "period": p,
+                    "period_label": f"{calendar.month_name[month]} {year}",
+                    "avgCogsRatio": round(float(r["avg_cogs_ratio"]), 1),
+                    "avgUsageRatio": round(float(r["avg_usage_ratio"]), 1),
+                    "totalRevenue": float(r["total_revenue"]) if r["total_revenue"] else 0.0,
+                    "totalCogs": float(r["total_cogs"]) if r["total_cogs"] else 0.0,
+                    "branchCount": r["branch_count"],
+                    "flaggedBranches": int(r["flagged_branches"]),
+                })
+            return result
+
+        placeholders = ",".join([f"TO_CHAR(sh.sales_date, 'YYYY-MM') = %s" for _ in period_list])
+        branch_filter = f"AND mb.id = {branch_id}" if branch_id else ""
+        cur.execute(f"""
+            SELECT TO_CHAR(sh.sales_date, 'YYYY-MM') AS period,
+                   AVG(65.0) AS avg_cogs_ratio,
+                   AVG(100.0) AS avg_usage_ratio,
+                   SUM(sh.grand_total) AS total_revenue,
+                   SUM(sh.grand_total) * 0.65 AS total_cogs,
+                   COUNT(DISTINCT mb.id) AS branch_count,
+                   0 AS flagged_branches
+            FROM esb_data.report_pos_sales_head sh
+            JOIN esb_data.master_branch mb ON mb.branch_code = sh.branch_code
+            WHERE ({placeholders}) {branch_filter}
+            GROUP BY period
+            ORDER BY period
+        """, tuple(period_list))
+        raw_rows = cur.fetchall()
+
+        result = []
+        for r in raw_rows:
+            p = r["period"]
+            year, month = int(p[:4]), int(p[5:7])
+            result.append({
+                "period": p,
+                "period_label": f"{calendar.month_name[month]} {year}",
+                "avgCogsRatio": round(float(r["avg_cogs_ratio"]), 1),
+                "avgUsageRatio": round(float(r["avg_usage_ratio"]), 1),
+                "totalRevenue": float(r["total_revenue"]) if r["total_revenue"] else 0.0,
+                "totalCogs": float(r["total_cogs"]) if r["total_cogs"] else 0.0,
+                "branchCount": r["branch_count"],
+                "flaggedBranches": int(r["flagged_branches"]),
+            })
+        return result
+    finally:
+        cur.close()
+        conn.close()
+
+
 @app.get("/api/v1/cogs-ratio/{branch_id}")
 async def get_cogs_ratio_by_branch(
     branch_id: int,
@@ -1537,167 +1695,6 @@ async def get_cogs_ratio_by_branch(
     except Exception as e:
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"Failed to get COGS ratio for branch: {str(e)}")
-
-
-@app.get("/api/v1/cogs-ratio/periods")
-async def get_cogs_ratio_periods():
-    """
-    Get available periods that have COGS data in report_pos_sales_head.
-
-    Returns periods in YYYY-MM format, newest first, up to 12 months back.
-    Falls back to generating months from current date if no data exists.
-    """
-    from app.core.db import get_db_connection
-    from datetime import date, timedelta
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        # Try to find periods with actual sales data
-        cur.execute("""
-            SELECT DISTINCT TO_CHAR(sales_date, 'YYYY-MM') AS period
-            FROM esb_data.report_pos_sales_head
-            ORDER BY period DESC
-            LIMIT 12
-        """)
-        rows = cur.fetchall()
-        periods = [r["period"] for r in rows]
-
-        # Fall back to generating months from current date if no data yet
-        if not periods:
-            today = date.today()
-            for i in range(12):
-                d = date(today.year, today.month, 1)
-                d = d.replace(month=((d.month - 1 - i - 1) % 12) + 1)
-                year_offset = (today.month - 1 - i - 1) // 12
-                d = d.replace(year=d.year + year_offset)
-                if i == 0:
-                    d = date(today.year, today.month, 1)
-                periods.append(d.strftime("%Y-%m"))
-
-        import calendar
-        result = []
-        for p in periods:
-            year, month = int(p[:4]), int(p[5:7])
-            label = f"{calendar.month_name[month]} {year}"
-            result.append({"value": p, "label": label})
-
-        return result
-    finally:
-        cur.close()
-        conn.close()
-
-
-@app.get("/api/v1/cogs-ratio/trend")
-async def get_cogs_ratio_trend(
-    branch_id: int = None,
-    periods: str = None,
-):
-    """
-    Get COGS ratio trend across multiple periods.
-
-    Parameters:
-    - branch_id: Optional branch ID filter
-    - periods: Optional comma-separated list of YYYY-MM periods (defaults to last 6 months)
-
-    Returns per-period aggregates for trend visualization.
-    """
-    from app.core.db import get_db_connection
-    from datetime import date
-    import calendar
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        # Default to last 6 months
-        period_list = []
-        if periods:
-            period_list = [p.strip() for p in periods.split(",") if p.strip()]
-        else:
-            today = date.today()
-            for i in range(6):
-                m = today.month - i
-                y = today.year
-                while m <= 0:
-                    m += 12
-                    y -= 1
-                period_list.append(f"{y}-{m:02d}")
-            period_list.reverse()
-
-        if not period_list:
-            return []
-
-        # Try from analysis_cogs_snapshot first (pre-computed)
-        cur.execute("""
-            SELECT period_label,
-                   AVG(cogs_ratio) AS avg_cogs_ratio,
-                   AVG(usage_ratio) AS avg_usage_ratio,
-                   SUM(revenue) AS total_revenue,
-                   SUM(cogs) AS total_cogs,
-                   COUNT(*) AS branch_count,
-                   SUM(CASE WHEN flagged THEN 1 ELSE 0 END) AS flagged_branches
-            FROM esb_data.analysis_cogs_snapshot
-            WHERE period_label = ANY(%s)
-              AND (%s::int IS NULL OR branch_id = %s::int)
-            GROUP BY period_label
-            ORDER BY period_label
-        """, (period_list, branch_id, branch_id))
-        snapshot_rows = cur.fetchall()
-
-        if snapshot_rows:
-            result = []
-            for r in snapshot_rows:
-                p = r["period_label"]
-                year, month = int(p[:4]), int(p[5:7])
-                result.append({
-                    "period": p,
-                    "period_label": f"{calendar.month_name[month]} {year}",
-                    "avgCogsRatio": round(float(r["avg_cogs_ratio"]), 1),
-                    "avgUsageRatio": round(float(r["avg_usage_ratio"]), 1),
-                    "totalRevenue": float(r["total_revenue"]) if r["total_revenue"] else 0.0,
-                    "totalCogs": float(r["total_cogs"]) if r["total_cogs"] else 0.0,
-                    "branchCount": r["branch_count"],
-                    "flaggedBranches": int(r["flagged_branches"]),
-                })
-            return result
-
-        # Fall back to raw POS data
-        placeholders = ",".join([f"TO_CHAR(sh.sales_date, 'YYYY-MM') = %s" for _ in period_list])
-        branch_filter = f"AND mb.id = {branch_id}" if branch_id else ""
-        cur.execute(f"""
-            SELECT TO_CHAR(sh.sales_date, 'YYYY-MM') AS period,
-                   AVG(65.0) AS avg_cogs_ratio,
-                   AVG(100.0) AS avg_usage_ratio,
-                   SUM(sh.grand_total) AS total_revenue,
-                   SUM(sh.grand_total) * 0.65 AS total_cogs,
-                   COUNT(DISTINCT mb.id) AS branch_count,
-                   0 AS flagged_branches
-            FROM esb_data.report_pos_sales_head sh
-            JOIN esb_data.master_branch mb ON mb.branch_code = sh.branch_code
-            WHERE ({placeholders}) {branch_filter}
-            GROUP BY period
-            ORDER BY period
-        """, tuple(period_list))
-        raw_rows = cur.fetchall()
-
-        result = []
-        for r in raw_rows:
-            p = r["period"]
-            year, month = int(p[:4]), int(p[5:7])
-            result.append({
-                "period": p,
-                "period_label": f"{calendar.month_name[month]} {year}",
-                "avgCogsRatio": round(float(r["avg_cogs_ratio"]), 1),
-                "avgUsageRatio": round(float(r["avg_usage_ratio"]), 1),
-                "totalRevenue": float(r["total_revenue"]) if r["total_revenue"] else 0.0,
-                "totalCogs": float(r["total_cogs"]) if r["total_cogs"] else 0.0,
-                "branchCount": r["branch_count"],
-                "flaggedBranches": int(r["flagged_branches"]),
-            })
-        return result
-    finally:
-        cur.close()
-        conn.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────
