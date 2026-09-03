@@ -68,7 +68,7 @@ jobs:
 
             echo "=== Updating docker-compose.yml ==="
             # Update image tag in docker-compose.yml
-            sed -i 's|image: .*calf-backend:|image: kopicalf/calf-backend:|' docker-compose.yml
+            sed -i 's|image: .*calf-backend:|image: ${{ secrets.DOCKER_USERNAME }}/calf-backend:|' docker-compose.yml
 
             echo "=== Starting services ==="
             docker compose up -d
