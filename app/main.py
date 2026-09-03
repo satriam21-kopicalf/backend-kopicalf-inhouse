@@ -6,6 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="CALF Ecosystem Backend")
 
+# Include routers
+from app.routers import stock_waste
+app.include_router(stock_waste.router)
+
 # Allow CORS for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
