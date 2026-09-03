@@ -126,6 +126,9 @@ class WasteApprovalAction(BaseModel):
 
 # ============== Stock Opname Endpoints ==============
 
+# NOTE: Route ordering matters in FastAPI. Specific routes (e.g. /pending-count)
+# must be defined BEFORE parameterized routes (e.g. /{opname_id}) to ensure correct matching.
+
 @router.get("/stock-opname", response_model=List[StockOpnameHeaderResponse])
 async def list_stock_opnames(
     branch_id: Optional[int] = Query(None),
@@ -137,7 +140,6 @@ async def list_stock_opnames(
     """List all stock opname records with filtering."""
     conn = get_conn()
     cur = conn.cursor()
-
     query = """
         SELECT soh.id, soh.branch_id, mb.code AS branch_code, mb.name AS branch_name,
                mb.branch_type, soh.opname_date, soh.period_month, soh.status,
@@ -148,7 +150,6 @@ async def list_stock_opnames(
         WHERE 1=1
     """
     params = []
-
     if branch_id:
         query += " AND soh.branch_id = %s"
         params.append(branch_id)
@@ -158,10 +159,8 @@ async def list_stock_opnames(
     if period_month:
         query += " AND soh.period_month = %s"
         params.append(period_month)
-
     query += " ORDER BY soh.created_at DESC LIMIT %s OFFSET %s"
     params.extend([limit, offset])
-
     try:
         cur.execute(query, params)
         rows = cur.fetchall()
@@ -171,8 +170,24 @@ async def list_stock_opnames(
     finally:
         cur.close()
         conn.close()
-
     return [dict(row) for row in rows]
+
+
+@router.get("/stock-opname/pending-count")
+async def get_pending_stock_opname_count():
+    """Count of pending (draft + submitted) stock opname records for dashboard badges."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT COUNT(*) AS count FROM esb_data.stock_opname_header WHERE status IN ('draft', 'submitted')")
+        row = dict(cur.fetchone())
+    except Exception:
+        conn.rollback()
+        row = {"count": 0}
+    finally:
+        cur.close()
+        conn.close()
+    return {"count": row["count"]}
 
 
 @router.get("/stock-opname/{opname_id}", response_model=StockOpnameHeaderResponse)
@@ -180,7 +195,6 @@ async def get_stock_opname(opname_id: int):
     """Get a single stock opname record."""
     conn = get_conn()
     cur = conn.cursor()
-    
     cur.execute("""
         SELECT soh.id, soh.branch_id, mb.code AS branch_code, mb.name AS branch_name,
                mb.branch_type, soh.opname_date, soh.period_month, soh.status,
@@ -190,14 +204,11 @@ async def get_stock_opname(opname_id: int):
         LEFT JOIN esb_data.master_branch mb ON mb.id = soh.branch_id
         WHERE soh.id = %s
     """, (opname_id,))
-    
     row = cur.fetchone()
     cur.close()
     conn.close()
-    
     if not row:
         raise HTTPException(status_code=404, detail="Stock opname not found")
-    
     return dict(row)
 
 
@@ -206,7 +217,6 @@ async def get_stock_opname_details(opname_id: int):
     """Get line items for a stock opname record."""
     conn = get_conn()
     cur = conn.cursor()
-    
     cur.execute("""
         SELECT sod.id, sod.product_id, mp.code AS product_code, mp.name AS product_name,
                mu.name AS uom_name, sod.system_qty, sod.counted_qty,
@@ -220,11 +230,9 @@ async def get_stock_opname_details(opname_id: int):
         WHERE sod.header_id = %s
         ORDER BY mp.name
     """, (opname_id,))
-    
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    
     return [dict(row) for row in rows]
 
 
@@ -233,13 +241,10 @@ async def create_stock_opname(data: StockOpnameCreate, x_user_id: str = Header("
     """Create a new stock opname record (draft status)."""
     conn = get_conn()
     cur = conn.cursor()
-    
     try:
         total_variance = sum(
-            (d.counted_qty - d.system_qty) * d.unit_cost
-            for d in data.details
+            (d.counted_qty - d.system_qty) * d.unit_cost for d in data.details
         )
-        
         cur.execute("""
             INSERT INTO esb_data.stock_opname_header
                 (branch_id, opname_date, period_month, status, total_variance_value,
@@ -251,7 +256,6 @@ async def create_stock_opname(data: StockOpnameCreate, x_user_id: str = Header("
             total_variance, len(data.details), x_user_id, data.notes
         ))
         header_id = cur.fetchone()["id"]
-        
         for detail in data.details:
             variance_qty = detail.counted_qty - detail.system_qty
             variance_value = variance_qty * detail.unit_cost
@@ -264,9 +268,7 @@ async def create_stock_opname(data: StockOpnameCreate, x_user_id: str = Header("
                 header_id, detail.product_id, detail.system_qty, detail.counted_qty,
                 detail.unit_cost, variance_qty, variance_value, detail.notes
             ))
-        
         conn.commit()
-        
         cur.execute("""
             SELECT soh.id, soh.branch_id, mb.code AS branch_code, mb.name AS branch_name,
                    mb.branch_type, soh.opname_date, soh.period_month, soh.status,
@@ -280,7 +282,6 @@ async def create_stock_opname(data: StockOpnameCreate, x_user_id: str = Header("
         cur.close()
         conn.close()
         return dict(row)
-        
     except Exception as e:
         conn.rollback()
         cur.close()
@@ -293,7 +294,6 @@ async def submit_stock_opname(opname_id: int, x_user_id: str = Header("system"))
     """Submit a stock opname for approval."""
     conn = get_conn()
     cur = conn.cursor()
-    
     cur.execute("""
         UPDATE esb_data.stock_opname_header
         SET status = 'submitted', updated_at = NOW()
@@ -301,13 +301,11 @@ async def submit_stock_opname(opname_id: int, x_user_id: str = Header("system"))
         RETURNING id, branch_id, opname_date, period_month, status, total_variance_value,
                   item_count, approved_by, approved_at, notes, created_by, created_at, updated_at
     """, (opname_id,))
-    
     row = cur.fetchone()
     if not row:
         cur.close()
         conn.close()
         raise HTTPException(status_code=404, detail="Stock opname not found or not in draft status")
-    
     conn.commit()
     cur.close()
     conn.close()
@@ -323,12 +321,9 @@ async def approve_stock_opname(
     """Approve or reject a stock opname."""
     if action.action not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'")
-    
     new_status = "approved" if action.action == "approve" else "rejected"
-    
     conn = get_conn()
     cur = conn.cursor()
-    
     cur.execute("""
         UPDATE esb_data.stock_opname_header
         SET status = %s, approved_by = %s, approved_at = NOW(),
@@ -337,13 +332,11 @@ async def approve_stock_opname(
         RETURNING id, branch_id, opname_date, period_month, status, total_variance_value,
                   item_count, approved_by, approved_at, notes, created_by, created_at, updated_at
     """, (new_status, x_user_id, action.notes, opname_id))
-    
     row = cur.fetchone()
     if not row:
         cur.close()
         conn.close()
         raise HTTPException(status_code=404, detail="Stock opname not found or not submitted")
-    
     conn.commit()
     cur.close()
     conn.close()
@@ -361,6 +354,7 @@ async def list_waste_records(
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
 ):
+    """List all waste records with filtering."""
     conn = get_conn()
     cur = conn.cursor()
     query = """SELECT wh.id, wh.branch_id, mb.code AS branch_code, mb.name AS branch_name,
@@ -397,11 +391,37 @@ async def list_waste_records(
     return [dict(row) for row in rows]
 
 
-@router.get("/waste/{waste_id}", response_model=WasteHeaderResponse)
-async def get_waste_record(waste_id: int):
+@router.get("/waste/pending-count")
+async def get_pending_waste_count():
+    """Count of pending (draft + submitted) waste records for dashboard badges."""
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT wh.id, wh.branch_id, mb.code AS branch_code, mb.name AS branch_name, mb.branch_type, wh.waste_date, wh.period_month, wh.status, wh.total_value, wh.item_count, wh.approved_by, wh.approved_at, wh.notes, wh.created_by, wh.created_at, wh.updated_at FROM esb_data.waste_header wh LEFT JOIN esb_data.master_branch mb ON mb.id = wh.branch_id WHERE wh.id = %s", (waste_id,))
+    try:
+        cur.execute("SELECT COUNT(*) AS count FROM esb_data.waste_header WHERE status IN ('draft', 'submitted')")
+        row = dict(cur.fetchone())
+    except Exception:
+        conn.rollback()
+        row = {"count": 0}
+    finally:
+        cur.close()
+        conn.close()
+    return {"count": row["count"]}
+
+
+@router.get("/waste/{waste_id}", response_model=WasteHeaderResponse)
+async def get_waste_record(waste_id: int):
+    """Get a single waste record."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT wh.id, wh.branch_id, mb.code AS branch_code, mb.name AS branch_name,
+               mb.branch_type, wh.waste_date, wh.period_month, wh.status,
+               wh.total_value, wh.item_count, wh.approved_by,
+               wh.approved_at, wh.notes, wh.created_by, wh.created_at, wh.updated_at
+        FROM esb_data.waste_header wh
+        LEFT JOIN esb_data.master_branch mb ON mb.id = wh.branch_id
+        WHERE wh.id = %s
+    """, (waste_id,))
     row = cur.fetchone()
     cur.close()
     conn.close()
@@ -412,9 +432,19 @@ async def get_waste_record(waste_id: int):
 
 @router.get("/waste/{waste_id}/details", response_model=List[WasteDetailResponse])
 async def get_waste_details(waste_id: int):
+    """Get line items for a waste record."""
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT wd.id, wd.product_id, mp.code AS product_code, mp.name AS product_name, mu.name AS uom_name, wd.qty, wd.unit_cost, (wd.qty * wd.unit_cost) AS total_value, wd.reason, wd.notes FROM esb_data.waste_detail wd LEFT JOIN esb_data.master_product mp ON mp.id = wd.product_id LEFT JOIN esb_data.master_uom mu ON mu.id = mp.uom_id WHERE wd.header_id = %s ORDER BY mp.name", (waste_id,))
+    cur.execute("""
+        SELECT wd.id, wd.product_id, mp.code AS product_code, mp.name AS product_name,
+               mu.name AS uom_name, wd.qty, wd.unit_cost,
+               (wd.qty * wd.unit_cost) AS total_value, wd.reason, wd.notes
+        FROM esb_data.waste_detail wd
+        LEFT JOIN esb_data.master_product mp ON mp.id = wd.product_id
+        LEFT JOIN esb_data.master_uom mu ON mu.id = mp.uom_id
+        WHERE wd.header_id = %s
+        ORDER BY mp.name
+    """, (waste_id,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -423,16 +453,41 @@ async def get_waste_details(waste_id: int):
 
 @router.post("/waste", response_model=WasteHeaderResponse)
 async def create_waste_record(data: WasteCreate, x_user_id: str = Header("system")):
+    """Create a new waste record (draft status)."""
     conn = get_conn()
     cur = conn.cursor()
     try:
         total_value = sum(d.qty * d.unit_cost for d in data.details)
-        cur.execute("INSERT INTO esb_data.waste_header (branch_id, waste_date, period_month, status, total_value, item_count, created_by, created_at, updated_at, notes) VALUES (%s, %s, %s, 'draft', %s, %s, %s, NOW(), NOW(), %s) RETURNING id", (data.branch_id, data.waste_date, data.period_month, total_value, len(data.details), x_user_id, data.notes))
+        cur.execute("""
+            INSERT INTO esb_data.waste_header
+                (branch_id, waste_date, period_month, status, total_value, item_count,
+                 created_by, created_at, updated_at, notes)
+            VALUES (%s, %s, %s, 'draft', %s, %s, %s, NOW(), NOW(), %s)
+            RETURNING id
+        """, (
+            data.branch_id, data.waste_date, data.period_month,
+            total_value, len(data.details), x_user_id, data.notes
+        ))
         header_id = cur.fetchone()["id"]
         for detail in data.details:
-            cur.execute("INSERT INTO esb_data.waste_detail (header_id, product_id, qty, unit_cost, total_value, reason, notes) VALUES (%s, %s, %s, %s, %s, %s, %s)", (header_id, detail.product_id, detail.qty, detail.unit_cost, detail.qty * detail.unit_cost, detail.reason, detail.notes))
+            cur.execute("""
+                INSERT INTO esb_data.waste_detail
+                    (header_id, product_id, qty, unit_cost, total_value, reason, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (
+                header_id, detail.product_id, detail.qty, detail.unit_cost,
+                detail.qty * detail.unit_cost, detail.reason, detail.notes
+            ))
         conn.commit()
-        cur.execute("SELECT wh.id, wh.branch_id, mb.code AS branch_code, mb.name AS branch_name, mb.branch_type, wh.waste_date, wh.period_month, wh.status, wh.total_value, wh.item_count, wh.approved_by, wh.approved_at, wh.notes, wh.created_by, wh.created_at, wh.updated_at FROM esb_data.waste_header wh LEFT JOIN esb_data.master_branch mb ON mb.id = wh.branch_id WHERE wh.id = %s", (header_id,))
+        cur.execute("""
+            SELECT wh.id, wh.branch_id, mb.code AS branch_code, mb.name AS branch_name,
+                   mb.branch_type, wh.waste_date, wh.period_month, wh.status,
+                   wh.total_value, wh.item_count, wh.approved_by,
+                   wh.approved_at, wh.notes, wh.created_by, wh.created_at, wh.updated_at
+            FROM esb_data.waste_header wh
+            LEFT JOIN esb_data.master_branch mb ON mb.id = wh.branch_id
+            WHERE wh.id = %s
+        """, (header_id,))
         row = cur.fetchone()
         cur.close()
         conn.close()
@@ -446,9 +501,16 @@ async def create_waste_record(data: WasteCreate, x_user_id: str = Header("system
 
 @router.post("/waste/{waste_id}/submit", response_model=WasteHeaderResponse)
 async def submit_waste_record(waste_id: int, x_user_id: str = Header("system")):
+    """Submit a waste record for approval."""
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("UPDATE esb_data.waste_header SET status = 'submitted', updated_at = NOW() WHERE id = %s AND status = 'draft' RETURNING id, branch_id, waste_date, period_month, status, total_value, item_count, approved_by, approved_at, notes, created_by, created_at, updated_at", (waste_id,))
+    cur.execute("""
+        UPDATE esb_data.waste_header
+        SET status = 'submitted', updated_at = NOW()
+        WHERE id = %s AND status = 'draft'
+        RETURNING id, branch_id, waste_date, period_month, status, total_value,
+                  item_count, approved_by, approved_at, notes, created_by, created_at, updated_at
+    """, (waste_id,))
     row = cur.fetchone()
     if not row:
         cur.close()
@@ -461,13 +523,25 @@ async def submit_waste_record(waste_id: int, x_user_id: str = Header("system")):
 
 
 @router.post("/waste/{waste_id}/approve", response_model=WasteHeaderResponse)
-async def approve_waste_record(waste_id: int, action: WasteApprovalAction, x_user_id: str = Header("system")):
+async def approve_waste_record(
+    waste_id: int,
+    action: WasteApprovalAction,
+    x_user_id: str = Header("system")
+):
+    """Approve or reject a waste record."""
     if action.action not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'")
     new_status = "approved" if action.action == "approve" else "rejected"
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("UPDATE esb_data.waste_header SET status = %s, approved_by = %s, approved_at = NOW(), notes = COALESCE(%s, notes), updated_at = NOW() WHERE id = %s AND status = 'submitted' RETURNING id, branch_id, waste_date, period_month, status, total_value, item_count, approved_by, approved_at, notes, created_by, created_at, updated_at", (new_status, x_user_id, action.notes, waste_id))
+    cur.execute("""
+        UPDATE esb_data.waste_header
+        SET status = %s, approved_by = %s, approved_at = NOW(),
+            notes = COALESCE(%s, notes), updated_at = NOW()
+        WHERE id = %s AND status = 'submitted'
+        RETURNING id, branch_id, waste_date, period_month, status, total_value,
+                  item_count, approved_by, approved_at, notes, created_by, created_at, updated_at
+    """, (new_status, x_user_id, action.notes, waste_id))
     row = cur.fetchone()
     if not row:
         cur.close()
@@ -477,25 +551,3 @@ async def approve_waste_record(waste_id: int, action: WasteApprovalAction, x_use
     cur.close()
     conn.close()
     return dict(row)
-
-
-@router.get("/stock-opname/pending-count")
-async def get_pending_stock_opname_count():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) AS count FROM esb_data.stock_opname_header WHERE status IN ('draft', 'submitted')")
-    row = dict(cur.fetchone())
-    cur.close()
-    conn.close()
-    return {"count": row["count"]}
-
-
-@router.get("/waste/pending-count")
-async def get_pending_waste_count():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) AS count FROM esb_data.waste_header WHERE status IN ('draft', 'submitted')")
-    row = dict(cur.fetchone())
-    cur.close()
-    conn.close()
-    return {"count": row["count"]}
