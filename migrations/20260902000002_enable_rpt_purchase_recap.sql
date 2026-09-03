@@ -3,7 +3,7 @@
 -- Purpose: Activate the Purchase Recapitulation report for sync
 
 -- 1. Activate the endpoint in endpoint_registry
-UPDATE esb.endpoint_registry
+UPDATE esb_data.endpoint_registry
 SET is_active = true
 WHERE entity = 'RPT_PURCHASE_RECAPITULATION';
 

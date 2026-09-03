@@ -1603,7 +1603,7 @@ async def get_cogs_ratio_trend(
                    SUM(revenue) AS total_revenue,
                    SUM(cogs) AS total_cogs,
                    COUNT(*) AS branch_count,
-                   SUM(CASE WHEN flagged THEN 1 ELSE 0 END) AS flagged_branches
+                   COALESCE(SUM(CASE WHEN flagged THEN 1 ELSE 0 END), 0) AS flagged_branches
             FROM esb_data.analysis_cogs_snapshot
             WHERE period_label = ANY(%s)
               AND (%s::int IS NULL OR branch_id = %s::int)
@@ -1662,6 +1662,7 @@ async def get_cogs_ratio_trend(
             })
         return result
     finally:
+        conn.rollback()
         cur.close()
         conn.close()
 
@@ -1937,6 +1938,9 @@ async def get_dashboard_summary(period: str):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
+        # Prevent runaway queries
+        cur.execute("SET LOCAL statement_timeout = '15000'")
+
         # COGS from analysis snapshot
         cur.execute("""
             SELECT
@@ -1945,7 +1949,7 @@ async def get_dashboard_summary(period: str):
                 COALESCE(AVG(usage_ratio), 0) AS avg_usage_ratio,
                 COALESCE(SUM(revenue), 0) AS total_revenue,
                 COALESCE(SUM(cogs), 0) AS total_cogs,
-                SUM(CASE WHEN flagged THEN 1 ELSE 0 END) AS flagged_branches
+                COALESCE(SUM(CASE WHEN flagged THEN 1 ELSE 0 END), 0) AS flagged_branches
             FROM esb_data.analysis_cogs_snapshot
             WHERE period_label = %s
         """, (period,))
@@ -1960,6 +1964,7 @@ async def get_dashboard_summary(period: str):
             """)
             pending_so = dict(cur.fetchone())["pending"]
         except Exception:
+            conn.rollback()
             pending_so = 0
 
         # Waste pending approvals (graceful if table doesn't exist)
@@ -1971,6 +1976,7 @@ async def get_dashboard_summary(period: str):
             """)
             pending_waste = dict(cur.fetchone())["pending"]
         except Exception:
+            conn.rollback()
             pending_waste = 0
 
         # Critical stock items (graceful if table doesn't exist)
@@ -1985,6 +1991,7 @@ async def get_dashboard_summary(period: str):
             """)
             critical_stock = dict(cur.fetchone())["critical"]
         except Exception:
+            conn.rollback()
             critical_stock = 0
 
         # Recent waste value MTD (graceful if table doesn't exist)
@@ -1997,6 +2004,7 @@ async def get_dashboard_summary(period: str):
             """, (period,))
             waste_mtd_val = dict(cur.fetchone())["waste_mtd"]
         except Exception:
+            conn.rollback()
             waste_mtd_val = 0
 
         cogs = dict(cogs_row)
@@ -2028,6 +2036,7 @@ async def get_dashboard_summary(period: str):
             "hasWasteData": False,
         }
     finally:
+        conn.rollback()
         cur.close()
         conn.close()
 
@@ -2102,6 +2111,7 @@ async def get_sales_recap_detail(
 
         return rows
     finally:
+        conn.rollback()
         cur.close()
         conn.close()
 
@@ -2163,6 +2173,7 @@ async def get_sales_recap_head(
 
         return rows
     finally:
+        conn.rollback()
         cur.close()
         conn.close()
 
@@ -2181,44 +2192,60 @@ async def get_sales_summary(period: str):
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        cur.execute("""
-            SELECT
-                COUNT(DISTINCT h.sales_num) AS total_transactions,
-                COUNT(l.sales_num) AS total_items,
-                COALESCE(SUM(l.qty), 0) AS total_qty,
-                COALESCE(SUM(h.grand_total), 0) AS total_revenue
-            FROM esb_data.report_pos_sales_head h
-            LEFT JOIN esb_data.report_pos_sales l
-              ON l.company_id = h.company_id AND l.sales_num = h.sales_num
-            WHERE h.company_id = 1
-              AND TO_CHAR(h.sales_date, 'YYYY-MM') = %s
-        """, (period,))
-        row = dict(cur.fetchone())
+        # Use date range to allow index usage
+        cur.execute("SET LOCAL statement_timeout = '90000'")
 
-        total_tx = int(row["total_transactions"] or 0)
-        total_rev = float(row["total_revenue"] or 0)
+        # Use date range to allow index usage
+        # Step 1: head-level stats (COUNT(*) per transaction, not DISTINCT)
+        cur.execute(f"""
+            SELECT
+                COUNT(*) AS total_transactions,
+                COALESCE(SUM(grand_total), 0) AS total_revenue
+            FROM esb_data.report_pos_sales_head h
+            WHERE h.company_id = 1
+              AND h.sales_date >= %s
+              AND h.sales_date < (%s::date + INTERVAL '1 month')
+        """, (f"{period}-01", f"{period}-01"))
+        head_row = dict(cur.fetchone())
+        total_tx = int(head_row["total_transactions"] or 0)
+        total_rev = float(head_row["total_revenue"] or 0)
         avg_ticket = total_rev / total_tx if total_tx > 0 else 0
+
+        # Step 2: line-item level stats (direct query on report_pos_sales which has sales_date)
+        cur.execute(f"""
+            SELECT
+                COUNT(*) AS total_items,
+                COALESCE(SUM(qty), 0) AS total_qty
+            FROM esb_data.report_pos_sales
+            WHERE company_id = 1
+              AND sales_date >= %s
+              AND sales_date < (%s::date + INTERVAL '1 month')
+        """, (f"{period}-01", f"{period}-01"))
+        line_row = dict(cur.fetchone())
+        total_items = int(line_row["total_items"] or 0)
+        total_qty = float(line_row["total_qty"] or 0)
 
         # Per-branch breakdown
         cur.execute("""
             SELECT
                 h.branch_code,
                 h.branch_name,
-                COUNT(DISTINCT h.sales_num) AS transactions,
+                COUNT(*) AS transactions,
                 COALESCE(SUM(h.grand_total), 0) AS revenue
             FROM esb_data.report_pos_sales_head h
             WHERE h.company_id = 1
-              AND TO_CHAR(h.sales_date, 'YYYY-MM') = %s
+              AND h.sales_date >= %s
+              AND h.sales_date < (%s::date + INTERVAL '1 month')
             GROUP BY h.branch_code, h.branch_name
             ORDER BY revenue DESC
-        """, (period,))
+        """, (f"{period}-01", f"{period}-01"))
         branches = [dict(r) for r in cur.fetchall()]
 
         return {
             "totalRevenue": total_rev,
             "totalTransactions": total_tx,
-            "totalItems": int(row["total_items"] or 0),
-            "totalQty": float(row["total_qty"] or 0),
+            "totalItems": total_items,
+            "totalQty": total_qty,
             "avgTicketSize": round(avg_ticket, 0),
             "branchBreakdown": [
                 {
@@ -2231,5 +2258,6 @@ async def get_sales_summary(period: str):
             ],
         }
     finally:
+        conn.rollback()
         cur.close()
         conn.close()
