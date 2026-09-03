@@ -2001,6 +2001,7 @@ async def get_cogs_snapshot(
     Falls back to computing from raw tables if snapshot is empty.
     Query params: period=YYYY-MM, company_id, branch_type, flagged_only.
     """
+    from app.core.db import get_db_connection
     from app.services.aggregation import refresh_cogs_snapshot
     from datetime import datetime
 
@@ -2090,6 +2091,7 @@ async def get_usage_ratio(
 
     Shows per-product actual vs theoretical material consumption.
     """
+    from app.core.db import get_db_connection
     from app.services.aggregation import refresh_usage_ratio
     from datetime import datetime
 
