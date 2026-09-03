@@ -32,8 +32,8 @@ def _get_pool():
             raise ValueError(f"Cannot parse DB_POOLER_URL: {db_url}")
 
         _connection_pool = pool.ThreadedConnectionPool(
-            minconn=3,          # Minimum connections
-            maxconn=15,         # Maximum connections
+            minconn=5,          # Minimum connections
+            maxconn=50,         # Maximum connections (increased for concurrent requests)
             database=dbname,
             user=user,
             password=password,
@@ -41,7 +41,7 @@ def _get_pool():
             port=port,
             options="-c search_path=esb_data,public"
         )
-        print(f"[DB] Connection pool created: min=3, max=15")
+        print(f"[DB] Connection pool created: min=5, max=50")
     return _connection_pool
 
 
