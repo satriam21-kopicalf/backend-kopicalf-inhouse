@@ -137,7 +137,7 @@ async def list_stock_opnames(
     """List all stock opname records with filtering."""
     conn = get_conn()
     cur = conn.cursor()
-    
+
     query = """
         SELECT soh.id, soh.branch_id, mb.code AS branch_code, mb.name AS branch_name,
                mb.branch_type, soh.opname_date, soh.period_month, soh.status,
@@ -148,7 +148,7 @@ async def list_stock_opnames(
         WHERE 1=1
     """
     params = []
-    
+
     if branch_id:
         query += " AND soh.branch_id = %s"
         params.append(branch_id)
@@ -158,15 +158,20 @@ async def list_stock_opnames(
     if period_month:
         query += " AND soh.period_month = %s"
         params.append(period_month)
-    
+
     query += " ORDER BY soh.created_at DESC LIMIT %s OFFSET %s"
     params.extend([limit, offset])
-    
-    cur.execute(query, params)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    
+
+    try:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+    except Exception:
+        conn.rollback()
+        rows = []
+    finally:
+        cur.close()
+        conn.close()
+
     return [dict(row) for row in rows]
 
 
@@ -380,10 +385,15 @@ async def list_waste_records(
         params.append(reason)
     query += " ORDER BY wh.created_at DESC LIMIT %s OFFSET %s"
     params.extend([limit, offset])
-    cur.execute(query, params)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+    try:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+    except Exception:
+        conn.rollback()
+        rows = []
+    finally:
+        cur.close()
+        conn.close()
     return [dict(row) for row in rows]
 
 

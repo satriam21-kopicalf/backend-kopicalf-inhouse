@@ -106,7 +106,8 @@ def main():
         ("20260822000000_create_esb_data_schema.sql", "Create esb_data schema and system tables"),
         ("20260822010000_create_master_tables.sql", "Create master data tables"),
         ("20260822020000_create_report_tables.sql", "Create report data tables"),
-        ("20260822030000_seed_system_data.sql", "Seed system data (companies, endpoints, schedules)")
+        ("20260822030000_seed_system_data.sql", "Seed system data (companies, endpoints, schedules)"),
+        ("20260823000000_create_stock_waste_tables.sql", "Create stock opname and waste management tables")
     ]
     
     # Run migrations
