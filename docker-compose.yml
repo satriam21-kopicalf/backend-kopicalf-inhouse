@@ -1,9 +1,8 @@
-version: '3.8'
-
 services:
   # Redis - Message Broker & Cache
   redis:
     image: redis:7-alpine
+    container_name: backend-kopicalf-inhouse-redis-1
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -11,13 +10,14 @@ services:
   # FastAPI HTTP Server
   api:
     image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
+    container_name: backend-kopicalf-inhouse-api-1
     command: uvicorn app.main:app --host 0.0.0.0 --port 8005
     ports:
       - "8005:8005"
     env_file:
       - .env
-    environment:
-      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
@@ -29,58 +29,54 @@ services:
   # Celery Beat Scheduler
   celery_beat:
     image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
+    container_name: backend-kopicalf-inhouse-celery_beat-1
     command: celery -A app.core.worker beat --loglevel=info
     env_file:
       - .env
-    environment:
-      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
     restart: unless-stopped
 
   # Master-data lane: infrequent master sync
   worker_master:
     image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
+    container_name: backend-kopicalf-inhouse-worker_master-1
     command: celery -A app.core.worker worker -Q queue_master --concurrency=4 --loglevel=info
     env_file:
       - .env
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - BACKFILL_WINDOW_START=19
-      - BACKFILL_WINDOW_END=8
-      - BACKFILL_START_DATE=2025-06-01
+    depends_on:
+      - redis
     restart: unless-stopped
 
   # Daily lane: TRX delta + direct reports
   worker_trx_daily:
     image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
+    container_name: backend-kopicalf-inhouse-worker_trx_daily-1
     command: celery -A app.core.worker worker -Q queue_sync --concurrency=8 --loglevel=info
     env_file:
       - .env
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - BACKFILL_WINDOW_START=19
-      - BACKFILL_WINDOW_END=8
-      - BACKFILL_START_DATE=2025-06-01
+    depends_on:
+      - redis
     restart: unless-stopped
 
-  # Historical backfill (night window 19:00-08:00 WIB)
+  # Historical backfill (night window 00:00-08:00 WIB)
   worker_backfill:
     image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
+    container_name: backend-kopicalf-inhouse-worker_backfill-1
     command: celery -A app.core.worker worker -Q queue_backfill --concurrency=16 --loglevel=info
     env_file:
       - .env
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - BACKFILL_WINDOW_START=19
-      - BACKFILL_WINDOW_END=8
-      - BACKFILL_START_DATE=2025-06-01
+    depends_on:
+      - redis
     restart: unless-stopped
 
   # Report queries + async exports
   worker_report:
     image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
+    container_name: backend-kopicalf-inhouse-worker_report-1
     command: celery -A app.core.worker worker -Q queue_report,queue_export --concurrency=8 --loglevel=info
     env_file:
       - .env
-    environment:
-      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
     restart: unless-stopped
