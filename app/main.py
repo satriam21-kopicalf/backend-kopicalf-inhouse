@@ -23,6 +23,237 @@ app.add_middleware(
 async def health_check():
     return {"status": "ok", "service": "calf-backend"}
 
+# ─────────────────────────────────────────────────────────────────────────
+# INLINE DATABASE MIGRATION ENDPOINT
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/v1/admin/migrations/run")
+async def run_migrations_inline():
+    """Run inline migrations to set up esb_data schema and master tables.
+
+    This creates the esb_data schema and master_* tables needed by the frontend.
+    """
+    import os
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    db_url = os.getenv('DB_POOLER_URL') or os.getenv('DATABASE_URL') or os.getenv('DB_DIRECT_URL')
+    if not db_url:
+        return {"status": "error", "message": "Database URL not found"}
+
+    try:
+        conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor)
+        conn.autocommit = True
+        cur = conn.cursor()
+
+        migrations_run = 0
+        errors = []
+
+        # Migration 1: Create esb_data schema
+        try:
+            cur.execute("CREATE SCHEMA IF NOT EXISTS esb_data;")
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"Schema creation: {str(e)}")
+
+        # Migration 2: Create master_branch table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_branch (
+                    id SERIAL PRIMARY KEY,
+                    company_id INTEGER DEFAULT 1,
+                    esb_id INTEGER UNIQUE,
+                    name VARCHAR(255),
+                    branch_code VARCHAR(50),
+                    branch_type VARCHAR(50),
+                    is_active BOOLEAN DEFAULT true,
+                    location_name VARCHAR(255),
+                    stock DECIMAL(15,2) DEFAULT 0,
+                    available_stock DECIMAL(15,2) DEFAULT 0,
+                    raw_data JSONB,
+                    synced_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_branch: {str(e)}")
+
+        # Migration 3: Create master_product table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_product (
+                    id SERIAL PRIMARY KEY,
+                    esb_id INTEGER UNIQUE,
+                    code VARCHAR(50),
+                    name VARCHAR(255),
+                    category_id INTEGER,
+                    category_name VARCHAR(100),
+                    sub_category_id INTEGER,
+                    sub_category_name VARCHAR(100),
+                    bom_id INTEGER,
+                    bom_name VARCHAR(255),
+                    type VARCHAR(50),
+                    normalized_name VARCHAR(255),
+                    is_active BOOLEAN DEFAULT true,
+                    unit_price DECIMAL(15,2),
+                    unit VARCHAR(20),
+                    raw_data JSONB,
+                    synced_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_product: {str(e)}")
+
+        # Migration 4: Create master_category table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_category (
+                    id SERIAL PRIMARY KEY,
+                    esb_id INTEGER UNIQUE,
+                    code VARCHAR(50),
+                    name VARCHAR(100),
+                    type VARCHAR(50),
+                    type_id INTEGER,
+                    parent_id INTEGER,
+                    is_active BOOLEAN DEFAULT true,
+                    notes TEXT,
+                    raw_data JSONB,
+                    synced_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_category: {str(e)}")
+
+        # Migration 5: Create master_unit table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_unit (
+                    id SERIAL PRIMARY KEY,
+                    company_id INTEGER DEFAULT 1,
+                    esb_id INTEGER UNIQUE,
+                    code VARCHAR(20),
+                    name VARCHAR(50),
+                    is_active BOOLEAN DEFAULT true,
+                    raw_data JSONB,
+                    synced_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_unit: {str(e)}")
+
+        # Migration 6: Create master_sub_category table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_sub_category (
+                    id SERIAL PRIMARY KEY,
+                    esb_id INTEGER UNIQUE,
+                    code VARCHAR(50),
+                    name VARCHAR(100),
+                    category_esb_id INTEGER,
+                    category_name VARCHAR(100),
+                    dead_stock_threshold INTEGER DEFAULT 30,
+                    is_active BOOLEAN DEFAULT true,
+                    raw_data JSONB,
+                    synced_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_sub_category: {str(e)}")
+
+        # Migration 7: Create master_bill_of_material table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_bill_of_material (
+                    id SERIAL PRIMARY KEY,
+                    esb_id INTEGER UNIQUE,
+                    code VARCHAR(50),
+                    name VARCHAR(255),
+                    product_id INTEGER,
+                    product_name VARCHAR(255),
+                    is_active BOOLEAN DEFAULT true,
+                    raw_data JSONB,
+                    synced_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_bill_of_material: {str(e)}")
+
+        cur.close()
+        conn.close()
+
+        return {
+            "status": "success" if not errors else "partial",
+            "message": f"Ran {migrations_run} migrations",
+            "migrations_run": migrations_run,
+            "errors": errors
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/v1/admin/migrations/status")
+async def get_migration_status():
+    """Get current migration status - what schemas and tables exist."""
+    import os
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    db_url = os.getenv('DB_POOLER_URL') or os.getenv('DATABASE_URL') or os.getenv('DB_DIRECT_URL')
+    if not db_url:
+        return {"error": "Database URL not found"}
+
+    try:
+        conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor)
+        cur = conn.cursor()
+
+        # Check schemas
+        cur.execute("""
+            SELECT schema_name FROM information_schema.schemata
+            WHERE schema_name IN ('esb_data', 'public')
+        """)
+        schemas = [r["schema_name"] for r in cur.fetchall()]
+
+        # Check tables in esb_data
+        cur.execute("""
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'esb_data' AND table_name LIKE 'master_%%'
+            ORDER BY table_name
+        """)
+        esb_tables = [r["table_name"] for r in cur.fetchall()]
+
+        # Check tables in public
+        cur.execute("""
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name LIKE 'master_%%'
+            ORDER BY table_name
+        """)
+        public_master_tables = [r["table_name"] for r in cur.fetchall()]
+
+        cur.close()
+        conn.close()
+
+        return {
+            "schemas": schemas,
+            "esb_data_tables": esb_tables,
+            "esb_data_count": len(esb_tables),
+            "public_master_tables": public_master_tables,
+            "needs_migration": "esb_data" not in schemas or len(esb_tables) == 0
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/api/v1/trx/status")
 async def trx_status():
     """Dual-lane TRX engine status: watermarks per company x entity x lane,
