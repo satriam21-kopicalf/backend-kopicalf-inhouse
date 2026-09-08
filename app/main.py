@@ -1,4 +1,6 @@
-﻿import typing
+﻿import threading
+import time as _time
+import typing
 from typing import Any
 from datetime import datetime, timezone
 from fastapi import FastAPI
@@ -9,6 +11,10 @@ app = FastAPI(title="CALF Ecosystem Backend")
 # Include routers
 from app.routers import stock_waste
 app.include_router(stock_waste.router)
+from app.routers import auth
+app.include_router(auth.router)
+from app.routers import internal_admin
+app.include_router(internal_admin.router)
 
 # Allow CORS for Next.js frontend
 app.add_middleware(
@@ -60,19 +66,20 @@ async def run_migrations_inline():
         try:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS esb_data.master_branch (
-                    id SERIAL PRIMARY KEY,
-                    company_id INTEGER DEFAULT 1,
-                    esb_id INTEGER UNIQUE,
-                    name VARCHAR(255),
-                    branch_code VARCHAR(50),
-                    branch_type VARCHAR(50),
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    name TEXT,
+                    branch_code TEXT,
                     is_active BOOLEAN DEFAULT true,
-                    location_name VARCHAR(255),
-                    stock DECIMAL(15,2) DEFAULT 0,
-                    available_stock DECIMAL(15,2) DEFAULT 0,
-                    raw_data JSONB,
-                    synced_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
+                    location_name TEXT,
+                    stock INTEGER DEFAULT 0,
+                    available_stock INTEGER DEFAULT 0,
+                    normalized_name TEXT,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
                 );
             """)
             migrations_run += 1
@@ -83,24 +90,21 @@ async def run_migrations_inline():
         try:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS esb_data.master_product (
-                    id SERIAL PRIMARY KEY,
-                    esb_id INTEGER UNIQUE,
-                    code VARCHAR(50),
-                    name VARCHAR(255),
-                    category_id INTEGER,
-                    category_name VARCHAR(100),
-                    sub_category_id INTEGER,
-                    sub_category_name VARCHAR(100),
-                    bom_id INTEGER,
-                    bom_name VARCHAR(255),
-                    type VARCHAR(50),
-                    normalized_name VARCHAR(255),
-                    is_active BOOLEAN DEFAULT true,
-                    unit_price DECIMAL(15,2),
-                    unit VARCHAR(20),
-                    raw_data JSONB,
-                    synced_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    name TEXT,
+                    product_code TEXT,
+                    bom_name TEXT,
+                    category_name TEXT,
+                    sub_category_name TEXT,
+                    category_type_name TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    normalized_name TEXT,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
                 );
             """)
             migrations_run += 1
@@ -111,18 +115,19 @@ async def run_migrations_inline():
         try:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS esb_data.master_category (
-                    id SERIAL PRIMARY KEY,
-                    esb_id INTEGER UNIQUE,
-                    code VARCHAR(50),
-                    name VARCHAR(100),
-                    type VARCHAR(50),
-                    type_id INTEGER,
-                    parent_id INTEGER,
-                    is_active BOOLEAN DEFAULT true,
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    code TEXT,
+                    name TEXT,
+                    type_name TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    category_type_id INTEGER,
                     notes TEXT,
-                    raw_data JSONB,
-                    synced_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
                 );
             """)
             migrations_run += 1
@@ -133,15 +138,16 @@ async def run_migrations_inline():
         try:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS esb_data.master_unit (
-                    id SERIAL PRIMARY KEY,
-                    company_id INTEGER DEFAULT 1,
-                    esb_id INTEGER UNIQUE,
-                    code VARCHAR(20),
-                    name VARCHAR(50),
-                    is_active BOOLEAN DEFAULT true,
-                    raw_data JSONB,
-                    synced_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    code TEXT,
+                    name TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
                 );
             """)
             migrations_run += 1
@@ -152,17 +158,19 @@ async def run_migrations_inline():
         try:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS esb_data.master_sub_category (
-                    id SERIAL PRIMARY KEY,
-                    esb_id INTEGER UNIQUE,
-                    code VARCHAR(50),
-                    name VARCHAR(100),
-                    category_esb_id INTEGER,
-                    category_name VARCHAR(100),
-                    dead_stock_threshold INTEGER DEFAULT 30,
-                    is_active BOOLEAN DEFAULT true,
-                    raw_data JSONB,
-                    synced_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    category_esb_id TEXT,
+                    code TEXT,
+                    name TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    dead_stock_threshold INTEGER,
+                    notes TEXT,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
                 );
             """)
             migrations_run += 1
@@ -173,21 +181,268 @@ async def run_migrations_inline():
         try:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS esb_data.master_bill_of_material (
-                    id SERIAL PRIMARY KEY,
-                    esb_id INTEGER UNIQUE,
-                    code VARCHAR(50),
-                    name VARCHAR(255),
-                    product_id INTEGER,
-                    product_name VARCHAR(255),
-                    is_active BOOLEAN DEFAULT true,
-                    raw_data JSONB,
-                    synced_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    product_esb_id TEXT,
+                    code TEXT,
+                    name TEXT,
+                    output_qty NUMERIC(10,2) DEFAULT 1.0,
+                    flag_active BOOLEAN DEFAULT true,
+                    bom_type_id INTEGER,
+                    bom_type_name TEXT,
+                    product_name TEXT,
+                    uom_name TEXT,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
                 );
             """)
             migrations_run += 1
         except Exception as e:
             errors.append(f"master_bill_of_material: {str(e)}")
+
+        # Migration 8: Create master_cost_center table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_cost_center (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    code TEXT,
+                    name TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_cost_center: {str(e)}")
+
+        # Migration 9: Create master_customer table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_customer (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    name TEXT,
+                    code TEXT,
+                    category_esb_id TEXT,
+                    category_name TEXT,
+                    payment_due_days INTEGER DEFAULT 0,
+                    address TEXT,
+                    pic_name TEXT,
+                    pic_phone TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    lock_vat BOOLEAN DEFAULT false,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_customer: {str(e)}")
+
+        # Migration 10: Create master_supplier table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_supplier (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    name TEXT,
+                    type TEXT,
+                    supplier_category TEXT,
+                    status TEXT,
+                    address TEXT,
+                    contact_person TEXT,
+                    cell_phone TEXT,
+                    due_date INTEGER,
+                    category_esb_id TEXT,
+                    lock_vat BOOLEAN DEFAULT false,
+                    vat_subject BOOLEAN DEFAULT false,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_supplier: {str(e)}")
+
+        # Migration 11: Create master_supplier_category table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_supplier_category (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    name TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_supplier_category: {str(e)}")
+
+        # Migration 12: Create master_customer_category table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_customer_category (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    name TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_customer_category: {str(e)}")
+
+        # Migration 13: Create master_charts_of_account table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_charts_of_account (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    coa_no TEXT,
+                    coa_level INTEGER,
+                    description TEXT,
+                    currency TEXT,
+                    branch_esb_id TEXT,
+                    flag_active BOOLEAN DEFAULT false,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_charts_of_account: {str(e)}")
+
+        # Migration 14: Create master_tax table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_tax (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    name TEXT,
+                    rate NUMERIC(5,2),
+                    code TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_tax: {str(e)}")
+
+        # Migration 15: Create master_cashflow_category table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_cashflow_category (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    name TEXT,
+                    code TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_cashflow_category: {str(e)}")
+
+        # Migration 16: Create master_purpose table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_purpose (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    name TEXT,
+                    account TEXT,
+                    coa_no TEXT,
+                    applied_to JSONB DEFAULT '[]',
+                    flag_active BOOLEAN DEFAULT true,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_purpose: {str(e)}")
+
+        # Migration 17: Create master_user table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_user (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    username TEXT,
+                    full_name TEXT,
+                    role_id TEXT,
+                    role_desc TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_user: {str(e)}")
+
+        # Migration 18: Create master_project table
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS esb_data.master_project (
+                    id BIGSERIAL PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    esb_id TEXT NOT NULL,
+                    name TEXT,
+                    code TEXT,
+                    flag_active BOOLEAN DEFAULT true,
+                    raw_data JSONB DEFAULT '{}',
+                    synced_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(company_id, esb_id)
+                );
+            """)
+            migrations_run += 1
+        except Exception as e:
+            errors.append(f"master_project: {str(e)}")
 
         cur.close()
         conn.close()
@@ -1573,7 +1828,7 @@ async def trigger_report_sync(report_type: str, body: dict):
     try:
         # Validate that the report type exists in endpoint registry
         cur.execute("""
-            SELECT er.*, cc.esb_company_code, cc.esb_username, cc.esb_password
+            SELECT er.*, ss.company_id, cc.esb_company_code, cc.esb_username, cc.esb_password
             FROM esb_data.endpoint_registry er
             JOIN esb_data.sync_schedules ss ON er.id = ss.endpoint_id
             JOIN esb_data.company_configs cc ON ss.company_id = cc.id
@@ -2409,6 +2664,277 @@ async def get_sales_recap_head(
         total = cur.fetchone()["total"]
 
         return rows
+    finally:
+        conn.rollback()
+        cur.close()
+        conn.close()
+
+
+NETT_SALES_SQL = """
+    ROUND(l.total - l.tax
+          - COALESCE((l.raw_data->>'vatValue')::numeric, 0)
+          - COALESCE((l.raw_data->>'otherTaxValue')::numeric, 0), 2)
+"""
+
+VOID_FILTER_SQL = "NOT (COALESCE(l.status_name, '') ~* '(void|cancel)')"
+
+# In-memory TTL cache for the sales recap report (aggregations scan a wide
+# table and take ~35-70s cold; dashboard hits repeat the same query).
+_RECAP_CACHE: dict = {}
+_RECAP_CACHE_LOCK = threading.Lock()
+_RECAP_TTL_SECONDS = 900
+
+
+def _recap_cache_key(company_id: int, date_from: str, date_to: str, branch_code, group_by: str, include_void: bool, limit: int, offset: int):
+    return (company_id, date_from, date_to, branch_code or "", group_by, bool(include_void), limit, offset)
+
+
+def _recap_cache_get(key):
+    with _RECAP_CACHE_LOCK:
+        hit = _RECAP_CACHE.get(key)
+        if hit and (_time.monotonic() - hit[0]) < _RECAP_TTL_SECONDS:
+            return hit[1]
+        if hit:
+            _RECAP_CACHE.pop(key, None)
+    return None
+
+
+def _recap_cache_set(key, value):
+    with _RECAP_CACHE_LOCK:
+        if len(_RECAP_CACHE) > 128:
+            oldest = min(_RECAP_CACHE, key=lambda k: _RECAP_CACHE[k][0])
+            _RECAP_CACHE.pop(oldest, None)
+        _RECAP_CACHE[key] = (_time.monotonic(), value)
+
+
+# sync def → FastAPI runs this in its threadpool; a slow query must not block
+# the event loop for every other endpoint (all DB access here is synchronous).
+@app.get("/api/v1/sales/recap-report")
+def get_sales_recap_report(
+    date_from: str,
+    date_to: str,
+    company_id: int = 1,
+    branch_code: str = None,
+    group_by: str = "daily",
+    include_void: bool = False,
+    limit: int = 200,
+    offset: int = 0,
+):
+    """
+    Aggregated sales reporting from POS lines (same source as
+    esb_data.v_sales_recap_detail), using sargable base-table filters.
+
+    group_by: daily | branch | menu | category
+    Metrics: bills, lines, qty, nett_sales (view formula), avg per bill.
+    """
+    from datetime import datetime
+
+    from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
+    group_by = (group_by or "daily").lower()
+    if group_by not in ("daily", "branch", "menu", "category"):
+        group_by = "daily"
+    try:
+        datetime.strptime(date_from, "%Y-%m-%d")
+        datetime.strptime(date_to, "%Y-%m-%d")
+    except ValueError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="date_from/date_to must be YYYY-MM-DD")
+
+    limit = min(limit, 1000)
+    offset = max(offset, 0)
+
+    cache_key = _recap_cache_key(company_id, date_from, date_to, branch_code, group_by, include_void, limit, offset)
+    cached = _recap_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute("SET LOCAL statement_timeout = '170s'")
+
+        where = """
+            WHERE l.company_id = %s
+              AND l.sales_date >= %s::date
+              AND l.sales_date < %s::date + INTERVAL '1 day'
+        """
+        params: list = [company_id, date_from, date_to]
+        if branch_code:
+            where += " AND l.branch_code = %s"
+            params.append(branch_code)
+        if not include_void:
+            where += f" AND {VOID_FILTER_SQL}"
+
+        group_sel = {
+            "daily": "TO_CHAR(l.sales_date, 'YYYY-MM-DD') AS group_key",
+            "branch": "COALESCE(l.branch_code, '') AS group_key, COALESCE(MAX(l.branch_name), '') AS branch_name",
+            "menu": "COALESCE(l.menu_name, '') AS group_key, COALESCE(MAX(l.menu_category_name), '') AS category_name",
+            "category": "COALESCE(l.menu_category_name, 'Uncategorized') AS group_key",
+        }[group_by]
+        group_clause = {
+            "daily": "TO_CHAR(l.sales_date, 'YYYY-MM-DD')",
+            "branch": "COALESCE(l.branch_code, '')",
+            "menu": "COALESCE(l.menu_name, '')",
+            "category": "COALESCE(l.menu_category_name, 'Uncategorized')",
+        }[group_by]
+        order_clause = {
+            "daily": "group_key ASC",
+            "branch": "nett_sales DESC",
+            "menu": "nett_sales DESC",
+            "category": "nett_sales DESC",
+        }[group_by]
+
+        agg_sql = f"""
+            SELECT
+                {group_sel},
+                COUNT(DISTINCT l.sales_num) AS bills,
+                COUNT(*) AS lines,
+                COALESCE(SUM(l.qty), 0) AS qty,
+                COALESCE(SUM({NETT_SALES_SQL}), 0) AS nett_sales
+            FROM esb_data.report_pos_sales l
+            {where}
+            GROUP BY {group_clause}
+            ORDER BY {order_clause}
+            LIMIT %s OFFSET %s
+        """
+        cur.execute(agg_sql, params + [min(limit, 1000), max(offset, 0)])
+        rows = [dict(r) for r in cur.fetchall()]
+        for r in rows:
+            r["avg_per_bill"] = round(float(r["nett_sales"]) / r["bills"], 2) if r["bills"] else 0
+
+        cur.execute(f"""
+            SELECT
+                COUNT(DISTINCT {group_clause}) AS total_groups,
+                COUNT(DISTINCT l.sales_num) AS bills,
+                COUNT(*) AS lines,
+                COALESCE(SUM(l.qty), 0) AS qty,
+                COALESCE(SUM({NETT_SALES_SQL}), 0) AS nett_sales
+            FROM esb_data.report_pos_sales l
+            {where}
+        """, params)
+        totals = dict(cur.fetchone())
+        totals["avg_per_bill"] = (
+            round(float(totals["nett_sales"]) / totals["bills"], 2) if totals["bills"] else 0
+        )
+
+        payload = {
+            "company_id": company_id,
+            "date_from": date_from,
+            "date_to": date_to,
+            "branch_code": branch_code,
+            "group_by": group_by,
+            "include_void": include_void,
+            "rows": rows,
+            "totals": totals,
+        }
+        _recap_cache_set(cache_key, payload)
+        return payload
+    finally:
+        conn.rollback()
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/v1/sales/recap-detail")
+def get_sales_recap_detail(
+    date_from: str,
+    date_to: str,
+    company_id: int = 1,
+    branch_code: str = None,
+    search: str = None,
+    include_void: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """
+    Raw POS sales line rows (columns mirror esb_data.report_pos_sales).
+
+    Server-side pagination via limit/offset (limit max 1000).
+    search matches bill_num / sales_num / menu_name / menu_code (ILIKE).
+    """
+    from datetime import datetime
+
+    from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
+    try:
+        datetime.strptime(date_from, "%Y-%m-%d")
+        datetime.strptime(date_to, "%Y-%m-%d")
+    except ValueError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="date_from/date_to must be YYYY-MM-DD")
+
+    limit = min(limit, 1000)
+    offset = max(offset, 0)
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute("SET LOCAL statement_timeout = '170s'")
+
+        where = """
+            WHERE l.company_id = %s
+              AND l.sales_date >= %s::date
+              AND l.sales_date < %s::date + INTERVAL '1 day'
+        """
+        params: list = [company_id, date_from, date_to]
+        if branch_code:
+            where += " AND l.branch_code = %s"
+            params.append(branch_code)
+        if search and search.strip():
+            where += " AND (l.bill_num ILIKE %s OR l.sales_num ILIKE %s OR l.menu_name ILIKE %s OR l.menu_code ILIKE %s)"
+            like = f"%{search.strip()}%"
+            params.extend([like, like, like, like])
+        if not include_void:
+            where += f" AND {VOID_FILTER_SQL}"
+
+        cur.execute(f"""
+            SELECT
+                TO_CHAR(l.sales_date, 'YYYY-MM-DD') AS sales_date,
+                l.sales_num,
+                l.bill_num,
+                l.branch_code,
+                COALESCE(l.branch_name, '') AS branch_name,
+                l.menu_code,
+                COALESCE(l.menu_name, '') AS menu_name,
+                COALESCE(l.menu_category_name, 'Uncategorized') AS menu_category,
+                l.qty,
+                l.price,
+                l.discount,
+                l.subtotal,
+                l.tax,
+                l.total,
+                {NETT_SALES_SQL} AS nett_sales,
+                COALESCE(l.status_name, '') AS status_name,
+                COUNT(*) OVER () AS _total
+            FROM esb_data.report_pos_sales l
+            {where}
+            ORDER BY l.sales_date DESC, l.sales_num, l.menu_code
+            LIMIT %s OFFSET %s
+        """, params + [limit, offset])
+        rows = []
+        total = 0
+        for r in cur.fetchall():
+            d = dict(r)
+            total = int(d.pop("_total", 0) or 0)
+            for k in ("qty", "price", "discount", "subtotal", "tax", "total", "nett_sales"):
+                d[k] = float(d[k]) if d[k] is not None else 0
+            rows.append(d)
+
+        return {
+            "company_id": company_id,
+            "date_from": date_from,
+            "date_to": date_to,
+            "branch_code": branch_code,
+            "search": search,
+            "include_void": include_void,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "rows": rows,
+        }
     finally:
         conn.rollback()
         cur.close()
