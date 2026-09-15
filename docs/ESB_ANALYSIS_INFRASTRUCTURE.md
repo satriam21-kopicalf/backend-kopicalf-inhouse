@@ -14,6 +14,7 @@
 > | `PRODUCTION_ORDER` / `PRODUCTION_MATERIAL` missing from `TRX_INDEX_VIEW` | 🔴 STILL OPEN |
 > | `trx_raw_staging` / `report_raw_staging` schema | ⚠️ Doc says `esb_data` — both staging tables actually live in `public` |
 > | New 2026-09-14/15: POS sales pipeline rebuilt | ✅ `report_pos_sales` now keyed by `(company_id, row_hash)` with in-memory qty grouping, rebuild mode, per-day completeness audit (count/qty 1%, total 3%), page-boundary overlap dedupe, parallel per-chunk backfill fan-out — see `reports.py::sync_pos_sales` / `sync_pos_sales_backfill` |
+> | 2026-09-15 DB cleanup | ✅ 18 tabel di-drop (semua 0 baris, 0 referensi kode: `analysis_cogs_snapshot`, `analysis_usage_ratio`, `master_approval_flow`, `master_customer_pricelist`, `master_normalization`, `product_material_override`, `report_bill_of_material`, `report_daily_sales_payment_recapitulation`, `report_menu_cogs`, `report_purchase_recapitulation`, `report_sales_payment_summary`, `report_stock_opname`, `report_transfer`, `stock_opname_detail`, `waste_detail`, `esb_data.company_configs`, `public.branch_normalizations`, `public.company_normalizations`). Kode mati dihapus: 3 task Celery di `aggregation.py` + 3 entri `beat_schedule` di `worker.py`. `waste_header`/`stock_opname_header`/`stock_system_adjustment` DIPERTAHANKAN (dipakai `stock_waste.py` router yang live) |
 
 **Tujuan akhir**: Membangun pipeline data yang akurat untuk mendukung analisis **COGS ratio** dan **usage ratio** — serta analisis analitis lainnya — dari data ESB yang sudah berhasil di-consume.
 
@@ -318,8 +319,8 @@ analysis_usage_ratio
 | `PRODUCTION_ORDER` TRX sync | ❌ Tidak ada | ❌ Tidak ada | 🟡 P3 |
 | `PRODUCTION_MATERIAL` TRX sync | ❌ Tidak ada | ❌ Tidak ada | 🟡 P3 |
 | OMS daily material usage | ❌ Tidak ada | ❌ Tidak ada | 🟡 P4 |
-| `analysis_cogs_snapshot` | ❌ Tidak ada | ❌ Tidak ada | 🟡 P5 |
-| `analysis_usage_ratio` | ❌ Tidak ada | ❌ Tidak ada | 🟡 P5 |
+| `analysis_cogs_snapshot` | ✅ Dihapus 2026-09-15 | tabel + task Celery dihapus | ✅ Selesai |
+| `analysis_usage_ratio` | ✅ Dihapus 2026-09-15 | tabel + task Celery dihapus | ✅ Selesai |
 | `report_raw_staging` COGS report | ✅ Ada (goods receipt recap) | trx_engine.py | ✅ Selesai |
 | `trx_raw_staging: SIMPLE_MANUFACTURING` | ✅ Ada | trx_engine.py | ✅ Selesai |
 | `trx_raw_staging: GOODS_RECEIPT` | ✅ Ada | trx_engine.py | ✅ Selesai |
