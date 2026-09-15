@@ -1660,16 +1660,29 @@ async def get_data_inventory():
         """)
         tables = [r["table_name"] for r in cur.fetchall()]
 
+        # Row counts: pg_class estimates (fast, no seq scans). Exact COUNT(*) on
+        # the multi-million-row report tables made this endpoint time out (>120s)
+        # in production. Estimates are re-synced by autovacuum ANALYZE and are
+        # accurate enough for the inventory dashboard.
+        cur.execute("""
+            SELECT c.relname, GREATEST(c.reltuples, 0)::bigint AS est
+            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'esb_data' AND c.relkind = 'r'
+        """)
+        est = {r["relname"]: int(r["est"] or 0) for r in cur.fetchall()}
+
         master, reports = {}, {}
         for t in tables:
             if t.startswith(("master_", "report_")):
-                try:
-                    cur.execute(f"SELECT COUNT(*) AS n FROM esb_data.{t}")
-                    n = cur.fetchone()["n"]
-                except Exception:
-                    conn.rollback()
-                    n = 0
-                (master if t.startswith("master_") else reports)[t] = n
+                n = est.get(t, 0)
+                if n < 200000:
+                    try:
+                        cur.execute(f"SELECT COUNT(*) AS n FROM esb_data.{t}")
+                        n = cur.fetchone()["n"]
+                    except Exception:
+                        conn.rollback()
+                        n = est.get(t, 0)
+                (master if t.startswith("master_") else reports)[t] = int(n)
 
         # staging totals
         staging = {}
@@ -1796,11 +1809,166 @@ async def master_entity_rows(entity: str, company_id: int = 1, limit: int = 100,
         cur.execute(
             f"SELECT {cols_sql} FROM esb_data.master_{table_suffix}{where} "
             f'ORDER BY "{order_col}" LIMIT %s OFFSET %s',
-            params + [min(limit, 500), offset])
+            params + [min(limit, 5000), offset])
         rows = [dict(r) for r in cur.fetchall()]
         return {"entity": entity.upper(), "table": f"esb_data.master_{table_suffix}",
                 "columns": [c for c in columns if c != "raw_data"],
                 "rows": rows, "total": total}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/v1/master/product-uoms")
+async def master_product_uoms(company_id: int = 1, limit: int = 5000):
+    """Per-product UOM variants from master_product_detail.
+    qty = conversion factor of that UOM relative to the base (smallest) unit
+    (is_base=true row has qty=1). Largest unit = variant with max qty."""
+    from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute("""
+            SELECT id, product_esb_id, uom_name, qty, base_price, sku,
+                   is_base, is_stock, is_purchase, is_transfer, is_sales, flag_active
+            FROM esb_data.master_product_detail
+            WHERE company_id = %s
+            ORDER BY product_esb_id, qty DESC
+            LIMIT %s
+        """, (company_id, min(limit, 20000)))
+        rows = [dict(r) for r in cur.fetchall()]
+        return {"rows": rows, "total": len(rows)}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/v1/master/bom-materials")
+async def master_bom_materials(company_id: int = 1, bom_esb_id: str = None, limit: int = 5000):
+    """BOM material lines from master_bom_material, resolved with material
+    product code/name. base_qty = qty * uom_qty * conversion_qty (material
+    quantity expressed in the material's smallest/base unit)."""
+    from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        where = "bm.company_id = %s"
+        params: list = [company_id]
+        if bom_esb_id:
+            where += " AND bm.bom_esb_id = %s"
+            params.append(bom_esb_id)
+        cur.execute(f"""
+            SELECT bm.bom_esb_id, bm.line_num, bm.material_esb_id,
+                   bm.material_product_esb_id, bm.qty, bm.uom_qty,
+                   bm.conversion_qty, bm.uom_name, bm.hpp, bm.price,
+                   bm.yield_percent, bm.stock_qty,
+                   (bm.qty * COALESCE(bm.uom_qty, 1) * COALESCE(bm.conversion_qty, 1)) AS base_qty,
+                   mp.product_code AS material_code, mp.name AS material_name,
+                   mp.category_name AS material_category
+            FROM esb_data.master_bom_material bm
+            LEFT JOIN esb_data.master_product mp
+                   ON mp.company_id = bm.company_id AND mp.esb_id = bm.material_product_esb_id
+            WHERE {where}
+            ORDER BY bm.bom_esb_id, bm.line_num
+            LIMIT %s
+        """, params + [min(limit, 20000)])
+        rows = [dict(r) for r in cur.fetchall()]
+        return {"rows": rows, "total": len(rows)}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/v1/master/material-overrides")
+async def get_material_overrides(company_id: int = 1):
+    """Manual adjustments of BOM material quantities (base unit) per product."""
+    from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute("""
+            SELECT id, product_esb_id, material_product_esb_id, qty_base,
+                   uom_name, note, created_by, created_at, updated_at
+            FROM esb_data.product_material_override
+            WHERE company_id = %s
+            ORDER BY product_esb_id, material_product_esb_id
+        """, (company_id,))
+        rows = [dict(r) for r in cur.fetchall()]
+        return {"rows": rows, "total": len(rows)}
+    except Exception:
+        conn.rollback()
+        return {"rows": [], "total": 0}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.put("/api/v1/master/material-overrides")
+async def put_material_overrides(body: dict):
+    """Upsert/delete material quantity overrides.
+    Body: {overrides: [{productEsbId, materialProductEsbId, qtyBase, uomName?, note?, createdBy?}]}
+    qtyBase=null deletes the override row."""
+    from app.core.db import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
+    overrides = (body or {}).get("overrides") or []
+    if not isinstance(overrides, list):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="overrides must be a list")
+
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS esb_data.product_material_override (
+                id BIGSERIAL PRIMARY KEY,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                product_esb_id TEXT NOT NULL,
+                material_product_esb_id TEXT NOT NULL,
+                qty_base NUMERIC(14,4),
+                uom_name TEXT,
+                note TEXT,
+                created_by TEXT DEFAULT 'system',
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(company_id, product_esb_id, material_product_esb_id)
+            );
+        """)
+        conn.commit()
+
+        saved = 0
+        deleted = 0
+        for o in overrides:
+            pesb = str(o.get("productEsbId") or "").strip()
+            mesb = str(o.get("materialProductEsbId") or "").strip()
+            if not pesb or not mesb:
+                continue
+            qty_base = o.get("qtyBase")
+            if qty_base is None:
+                cur.execute("""
+                    DELETE FROM esb_data.product_material_override
+                    WHERE company_id = %s AND product_esb_id = %s AND material_product_esb_id = %s
+                """, (1, pesb, mesb))
+                deleted += 1
+            else:
+                cur.execute("""
+                    INSERT INTO esb_data.product_material_override
+                        (company_id, product_esb_id, material_product_esb_id, qty_base, uom_name, note, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (company_id, product_esb_id, material_product_esb_id)
+                    DO UPDATE SET qty_base = EXCLUDED.qty_base, uom_name = EXCLUDED.uom_name,
+                                  note = EXCLUDED.note, updated_at = NOW()
+                """, (1, pesb, mesb, float(qty_base), o.get("uomName"), o.get("note"),
+                      (o.get("createdBy") or "system")))
+                saved += 1
+        conn.commit()
+        return {"saved": saved, "deleted": deleted}
     finally:
         cur.close()
         conn.close()
@@ -2829,14 +2997,17 @@ def get_sales_recap_detail(
                 l.menu_code,
                 COALESCE(l.menu_name, '') AS menu_name,
                 COALESCE(l.menu_category_name, 'Uncategorized') AS menu_category,
+                COALESCE(l.menu_category_detail_name, '') AS menu_category_detail,
                 l.qty,
                 l.price,
                 l.discount,
                 l.subtotal,
+                COALESCE(l.service_charge, 0) AS service_charge,
                 l.tax,
                 l.total,
                 {NETT_SALES_SQL} AS nett_sales,
                 COALESCE(l.status_name, '') AS status_name,
+                COALESCE(l.notes, '') AS notes,
                 COUNT(*) OVER () AS _total
             FROM esb_data.report_pos_sales l
             {where}
@@ -2848,7 +3019,7 @@ def get_sales_recap_detail(
         for r in cur.fetchall():
             d = dict(r)
             total = int(d.pop("_total", 0) or 0)
-            for k in ("qty", "price", "discount", "subtotal", "tax", "total", "nett_sales"):
+            for k in ("qty", "price", "discount", "subtotal", "service_charge", "tax", "total", "nett_sales"):
                 d[k] = float(d[k]) if d[k] is not None else 0
             rows.append(d)
 

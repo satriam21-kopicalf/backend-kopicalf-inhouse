@@ -5,6 +5,7 @@ to minimize system load and external API throttling issues.
 """
 
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 import pytz
@@ -29,6 +30,11 @@ def is_within_operational_window(current_time: Optional[datetime] = None) -> boo
     Returns:
         True if within operational window, False otherwise
     """
+    # Manual override: set ALLOW_OUTSIDE_WINDOW=1 only on one-off manual runs
+    # (e.g. docker exec backfill). Scheduled beat workers never set this.
+    if os.getenv('ALLOW_OUTSIDE_WINDOW', '0') == '1':
+        return True
+
     if current_time is None:
         current_time = datetime.now(JAKARTA)
 

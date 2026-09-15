@@ -5,7 +5,7 @@ import math
 import httpx
 import typing
 from datetime import datetime, timezone, date, timedelta
-from psycopg2.extras import execute_values, DictCursor
+from psycopg2.extras import execute_values, DictCursor, Json
 from app.core.worker import celery_app
 from app.core.db import get_db_connection
 import pytz
@@ -316,11 +316,16 @@ class ESBClient:
         self.circuit_breaker = ESBCircuitBreaker()
 
     def _reauth(self) -> bool:
-        """Re-authenticate to ESB and update token."""
+        """Re-authenticate to ESB and update token.
+
+        Uses the shared esb_auth_lock (via _auth_locked_company_token) so
+        concurrent company tasks cannot invalidate each other's base JWT.
+        """
         if not (self.company_code and self.username and self.password):
             return False
         try:
-            self.token = _esb_company_token(self.company_code, self.username, self.password)
+            from app.services.trx_engine import _auth_locked_company_token
+            self.token = _auth_locked_company_token(self.company_code, self.username, self.password)
             print(f"[ESBClient] Re-auth successful for {self.company_code}")
             return True
         except Exception as e:
@@ -532,7 +537,11 @@ UPSERTS = {
     "esb_data.master_sub_category": """
         INSERT INTO esb_data.master_sub_category (esb_id, company_id, category_esb_id, code, name, flag_active, dead_stock_threshold, notes, raw_data)
         VALUES %s ON CONFLICT (company_id, esb_id) DO UPDATE SET
-            category_esb_id=EXCLUDED.category_esb_id, code=EXCLUDED.code, name=EXCLUDED.name,
+            -- API /product/sub-category does not return categoryID (confirmed
+            -- via schemas/esb.py); keep the backfilled parent link instead of
+            -- NULLing it on every re-sync. Backfill derives it from
+            -- master_product.raw_data->>'categoryID' (see docs audit 2026-09-15).
+            category_esb_id=COALESCE(EXCLUDED.category_esb_id, master_sub_category.category_esb_id), code=EXCLUDED.code, name=EXCLUDED.name,
             flag_active=EXCLUDED.flag_active, dead_stock_threshold=EXCLUDED.dead_stock_threshold,
             notes=EXCLUDED.notes, raw_data=EXCLUDED.raw_data, updated_at=NOW()""",
     "esb_data.master_unit": """
@@ -750,7 +759,8 @@ def _sync_product_details(company_id: int, client: ESBClient):
                         pd.get("qty"), pd.get("basePrice"), pd.get("SKU"),
                         bool(pd.get("isBase")), bool(pd.get("isStock")), bool(pd.get("isPurchase")),
                         bool(pd.get("isTransfer")), bool(pd.get("isSales")), bool(pd.get("flagActive", True)),
-                        pd.get("raw_data", {})))
+                        Json(dict(pd)),
+                        datetime.now(timezone.utc)))
                 if rows:
                     execute_values(cur, """
                         INSERT INTO esb_data.master_product_detail
@@ -765,8 +775,9 @@ def _sync_product_details(company_id: int, client: ESBClient):
                             updated_at=NOW(), synced_at=NOW()
                     """, rows)
                     conn.commit()
-            except Exception:
+            except Exception as e:
                 conn.rollback()
+                print(f"[product_detail] /product/{esb_id} failed: {e}")
                 continue
     finally:
         cur.close()
@@ -803,7 +814,8 @@ def _sync_bom_materials(company_id: int, client: ESBClient):
                         str(detail.get("productID", "")) or None,
                         detail.get("qty", 0) or 0,
                         detail.get("uomQty", 0) or 0,
-                        detail.get("conversionQty", 0) or 0,
+                        # ESB API spells it "convertionQty" (sic)
+                        detail.get("convertionQty") or detail.get("conversionQty") or 0,
                         detail.get("uomName"),
                         detail.get("lastHpp", 0) or 0,
                         detail.get("price", 0) or 0,
@@ -812,6 +824,7 @@ def _sync_bom_materials(company_id: int, client: ESBClient):
                         detail.get("printGroup"),
                         detail.get("stockQty", 0) or 0,
                         json.dumps(detail),
+                        datetime.now(timezone.utc),
                     ))
                 if rows:
                     execute_values(cur, """
@@ -831,8 +844,9 @@ def _sync_bom_materials(company_id: int, client: ESBClient):
                             raw_data=EXCLUDED.raw_data, updated_at=NOW(), synced_at=NOW()
                     """, rows)
                     conn.commit()
-            except Exception:
+            except Exception as e:
                 conn.rollback()
+                print(f"[bom_material] /product/bom/{bom_esb_id} failed: {e}")
                 continue
     finally:
         cur.close()

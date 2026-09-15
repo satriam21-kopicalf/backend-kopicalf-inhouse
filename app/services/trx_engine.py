@@ -21,6 +21,7 @@ import json
 import time
 import math
 import hashlib
+import logging
 import typing
 import urllib.parse
 from datetime import datetime, timezone, date, timedelta
@@ -396,6 +397,37 @@ def _stale_running_cleanup(cur):
         UPDATE sync_watermarks SET status = 'idle', updated_at = NOW()
         WHERE status = 'running' AND updated_at < NOW() - INTERVAL '3 hours'
     """)
+    # Mark sync_history rows stuck in STARTED > 6h as abandoned — the task
+    # died without reaching its UPDATE (dead worker, pool exhaustion, etc.)
+    cur.execute("""
+        UPDATE sync_history SET status = 'FAILED',
+            error_message = COALESCE(NULLIF(error_message, ''), 'abandoned: stuck in STARTED > 6h'),
+            completed_at = NOW()
+        WHERE status = 'STARTED' AND started_at < NOW() - INTERVAL '6 hours'
+    """)
+
+
+def _reset_stale_watermarks_safe():
+    """Run _stale_running_cleanup on its own connection, swallowing errors.
+
+    Scheduled ingest tasks are gated by the 03:00-08:00 WIB operational window
+    and previously only cleaned stale watermarks AFTER passing the gate — so
+    runs interrupted at the window close (hour=8 boundary) left watermarks
+    stuck in 'running' for ~19h. Calling this BEFORE the gate lets every
+    beat tick (also the skipped ones) keep watermark state healthy."""
+    try:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            _stale_running_cleanup(cur)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        try:
+            logging.warning(f"stale watermark cleanup failed: {exc}")
+        except Exception:
+            pass
 
 
 def _advance_delta_watermark(cur, company_id: int, entity: str, new_date):
@@ -430,9 +462,6 @@ def _iter_index_rows(client: ESBClient, cfg: dict, date_from: date, date_to: dat
         body = client.get(cfg["index_path"], params=params)
         rows, total_pages = _extract_page(body, "envelope")
         for row in rows:
-            if cfg["index_path"] == "/sales/product-sales" and page == 1:
-                import logging
-                logging.error(f"DEBUG PRODUCT_SALES ROW: {row}")
             row_date = _parse_date(row.get(cfg["doc_date_field"]))
             if row_date and date_from <= row_date <= date_to:
                 yield row
@@ -613,6 +642,7 @@ def _due_trx_entities(cur) -> list:
 @celery_app.task(bind=True, name="app.services.trx_engine.delta_sync_trx")
 def delta_sync_trx(self):
     """Daily delta for all companies (sequential) for TRX entities that are due."""
+    _reset_stale_watermarks_safe()
     if not is_within_operational_window():
         return "Outside operational window (03:00-08:00 WIB) - delta sync skipped"
     
@@ -693,6 +723,7 @@ def realtime_sync_trx(self):
     """Real-time sync for all companies: pulls T-0 (current day) data every 5 minutes.
     This ensures today's transactions are available immediately without waiting for
     the daily delta or historical backfill lanes."""
+    _reset_stale_watermarks_safe()
     if not is_within_operational_window():
         return "Outside operational window (03:00-08:00 WIB) - realtime sync skipped"
     
@@ -1003,6 +1034,7 @@ def completeness_audit():
     watermark has passed it, or the bucket falls inside the delta window
     (T-2..T). Buckets in between (backfill not converged yet) are logged as
     PENDING_BACKFILL without re-pull — the nightly backfill owns them."""
+    _reset_stale_watermarks_safe()
     if not is_within_operational_window():
         return "Outside operational window (03:00-08:00 WIB) - completeness audit skipped"
     
@@ -1073,7 +1105,7 @@ def completeness_audit():
                             after = row["n"] if row else 0
                             cur.execute("""
                                 INSERT INTO report_reconciliation_log (company_id, entity_type, bucket_date, api_count, staging_count, status, staging_after)
-                                VALUES (%s, %s, %s, %s, %s, 'REPOILED', %s)
+                                VALUES (%s, %s, %s, %s, %s, 'RE_PULLED', %s)
                             """, (co["id"], entity, bucket, api_count, staging_count, after))
                             conn.commit()
                         except Exception:
@@ -1109,18 +1141,10 @@ RPT_DIRECT: typing.Dict[str, dict] = {
         "params_for": lambda d: {"dateFrom": d.isoformat(), "dateTo": d.isoformat()},
         "window_days": 2,   # yesterday + today (T-2 -> T)
     },
-    # Menu COGS Report - Menu-level cost of goods sold analysis
-    "RPT_MENU_COGS": {
-        "path": "/report/menu-cogs",
-        "params_for": lambda d: {"reportDate": d.isoformat()},
-        "window_days": 2,   # yesterday + today (T-2 -> T)
-    },
-    # Purchase Recapitulation Report - PO-level recap
-    "RPT_PURCHASE_RECAPITULATION": {
-        "path": "/report/purchase-recapitulation",
-        "params_for": lambda d: {"dateFrom": d.isoformat(), "dateTo": d.isoformat()},
-        "window_days": 2,   # yesterday + today (T-2 -> T)
-    },
+    # Removed 2026-09-08: RPT_MENU_COGS (/report/menu-cogs) and
+    # RPT_PURCHASE_RECAPITULATION (/report/purchase-recapitulation) — both
+    # return 404 on ESB production and are absent from the ESB endpoint
+    # breakdown; re-add only if ESB ships them.
 }
 
 
@@ -1322,6 +1346,35 @@ def sync_direct_reports_delta():
         conn.close()
 
 
+def _flatten_stock_movement(cur, company_id: int, d: date, by_branch: dict) -> int:
+    """Flatten staged stock-movement lines into esb_data.report_stock_movement
+    (replace per company+report_date+branch so re-runs stay idempotent)."""
+    written = 0
+    for b_code, lines in by_branch.items():
+        cur.execute(
+            "DELETE FROM esb_data.report_stock_movement WHERE company_id = %s AND report_date = %s AND branch_esb_id = %s",
+            (company_id, d, b_code))
+        for r in lines:
+            cur.execute("""
+                INSERT INTO esb_data.report_stock_movement
+                (company_id, report_date, branch_esb_id, product_code, product_name, branch_name,
+                 location, uom_name, transaction_type, reference_number, document_code, document_date,
+                 value_per_unit, qty_in, amount_in, qty_out, amount_out, qty_balance, amount_balance,
+                 raw_data, synced_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            """, (
+                company_id, d, str(r.get("branchID") or b_code),
+                r.get("productCode"), r.get("productName"), r.get("branchName"),
+                r.get("location"), r.get("UOM") or r.get("uomName"), r.get("transactionType"),
+                r.get("referenceNumber"), r.get("documentCode"), r.get("documentDate"),
+                r.get("valuePerUnit") or 0, r.get("qtyIn") or 0, r.get("amountIn") or 0,
+                r.get("qtyOut") or 0, r.get("amountOut") or 0, r.get("qtyBalance") or 0,
+                r.get("amountBalance") or 0, json.dumps(r, default=str),
+            ))
+            written += 1
+    return written
+
+
 @celery_app.task(name="app.services.trx_engine.sync_direct_reports_company")
 def sync_direct_reports_company(company_id: int, window_days: typing.Optional[int]):
     """Pull direct period-based reports for ONE company into report_raw_staging
@@ -1385,6 +1438,8 @@ def sync_direct_reports_company(company_id: int, window_days: typing.Optional[in
                           json.dumps({k: v for k, v in cfg["params_for"](d).items()}, default=str),
                           datetime.now(timezone.utc)))
                     pulled += len(lines)
+                if entity == "RPT_STOCK_MOVEMENT":
+                    pulled += _flatten_stock_movement(cur, co["id"], d, by_branch)
                 conn.commit()
             status = "FAILED" if has_error else "SUCCESS"
             cur.execute(
@@ -1422,15 +1477,14 @@ def rpt_backfill_entity(company_id: int, entity: str = "RPT_STOCK_MOVEMENT"):
         return f"Unknown RPT entity {entity}"
     # Phase 1 priorities: all report entities needed for analysis
     # Added 2026-09-02: RPT_STOCK_MOVEMENT, RPT_SALES_PAYMENT_SUMMARY
-    # Added 2026-09-02: RPT_MENU_COGS - menu-level cost analysis
-    # Added 2026-09-02: RPT_PURCHASE_RECAPITULATION - PO-level recap
+    # Removed 2026-09-14: RPT_MENU_COGS, RPT_PURCHASE_RECAPITULATION — the ESB
+    # endpoints 404 since 2026-09-08 and every backfill attempt failed; the
+    # entries blocked nothing but kept retrying dead endpoints.
     priority_entities = (
         "PRODUCT_SALES",
         "RPT_GOODS_RECEIPT_RECAPITULATION",
         "RPT_STOCK_MOVEMENT",
         "RPT_SALES_PAYMENT_SUMMARY",
-        "RPT_MENU_COGS",
-        "RPT_PURCHASE_RECAPITULATION",
     )
     if entity not in priority_entities:
         return f"Temporarily paused non-priority RPT entity {entity}"

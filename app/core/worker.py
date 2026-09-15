@@ -98,7 +98,7 @@ celery_app.conf.beat_schedule = {
         'task': 'app.services.trx_engine.backfill_router',
         'schedule': crontab(minute='*/25'),
     },
-    # Direct report LIVE delta: every 30 minutes, all companies in parallel
+    # Direct report LIVE delta: every 15 minutes, all companies in parallel
     # (window T-1..T; deep T-7 refresh stays on the 06:00 beat below)
     'trx-direct-reports-delta': {
         'task': 'app.services.trx_engine.sync_direct_reports_delta',
@@ -109,15 +109,20 @@ celery_app.conf.beat_schedule = {
         'task': 'app.services.trx_engine.sync_direct_reports',
         'schedule': crontab(hour=6, minute=0),
     },
-    # Completeness audit + self-healing re-pull (07:15 WIB, after delta and
-    # direct reports have fully settled)
+    # Completeness audit + self-healing re-pull (06:00 WIB).
+    # Was 07:15: queue_sync congestion routinely delayed execution past the
+    # 08:00 window close, so the task self-skipped and report_reconciliation_log
+    # got no rows after 2026-09-08. Running at the window start avoids the
+    # congestion and leaves hours of headroom.
     'trx-completeness-audit': {
         'task': 'app.services.trx_engine.completeness_audit',
-        'schedule': crontab(hour=7, minute=15),
+        'schedule': crontab(hour=6, minute=0),
     },
-    # POS sales recovery: find days with low/incomplete data and re-sync (08:00 WIB)
+    # POS sales recovery: find days with low/incomplete data and re-sync.
+    # Was 08:00 WIB = exactly the window end (03:00 <= h < 08:00), so the gate
+    # ALWAYS skipped it. 07:00 leaves a full hour of window.
     'pos-sales-recovery': {
         'task': 'app.services.reports.sync_pos_sales_recovery',
-        'schedule': crontab(hour=8, minute=0),
+        'schedule': crontab(hour=7, minute=0),
     },
 }

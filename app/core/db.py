@@ -3,59 +3,139 @@ import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+import time
+import threading
 
 load_dotenv()
 
-# Global connection pool
-_connection_pool = None
+# Pool size: workers hold 1 conn per nested task stage; keep headroom to avoid
+# "connection pool exhausted" at celery concurrency 8+
+POOL_MAX = int(os.getenv('DB_POOL_MAX', '20'))
 
+# Global connection pool with lock for thread safety
+_connection_pool = None
+_pool_lock = threading.Lock()
 
 def _get_pool():
     """Get or create the connection pool (singleton pattern)."""
     global _connection_pool
-    if _connection_pool is None:
-        db_url = os.getenv('DB_POOLER_URL')
-        if not db_url:
-            raise ValueError("Database URL not found in environment variables.")
 
-        # Parse connection parameters from URL
-        # Format: postgresql://user:password@host:port/dbname
+    if _connection_pool is not None:
+        return _connection_pool
+
+    with _pool_lock:
+        # Double-check after acquiring lock
+        if _connection_pool is not None:
+            return _connection_pool
+
+        # Use direct URL to avoid pooler limit issues
+        db_url = os.getenv('DB_DIRECT_URL') or os.getenv('DATABASE_URL')
+        pooler_url = os.getenv('DB_POOLER_URL')
+
         import re
-        match = re.match(
-            r'postgresql://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)',
-            db_url
-        )
-        if match:
-            user, password, host, port, dbname = match.groups()
-        else:
-            # Fallback to direct connection
-            raise ValueError(f"Cannot parse DB_POOLER_URL: {db_url}")
+        match = None
 
-        _connection_pool = pool.ThreadedConnectionPool(
-            minconn=5,          # Minimum connections
-            maxconn=50,         # Maximum connections (increased for concurrent requests)
-            database=dbname,
-            user=user,
-            password=password,
-            host=host,
-            port=port,
-            options="-c search_path=esb_data,public"
-        )
-        print(f"[DB] Connection pool created: min=5, max=50")
-    return _connection_pool
+        # Try direct URL first
+        if db_url:
+            match = re.match(r'postgresql://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)', db_url)
+            if match:
+                user, password, host, port, dbname = match.groups()
+                try:
+                    _connection_pool = pool.ThreadedConnectionPool(
+                        minconn=2,
+                        maxconn=POOL_MAX,
+                        database=dbname,
+                        user=user,
+                        password=password,
+                        host=host,
+                        port=port,
+                        options="-c search_path=esb_data,public"
+                    )
+                    print(f"[DB] Pool created (direct): min=2, max={POOL_MAX}")
+                    return _connection_pool
+                except Exception as e:
+                    print(f"[DB] Direct connection failed: {e}")
+                    _connection_pool = None
+
+        # Fallback to pooler
+        if pooler_url:
+            match = re.match(r'postgresql://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)', pooler_url)
+            if match:
+                user, password, host, port, dbname = match.groups()
+                try:
+                    _connection_pool = pool.ThreadedConnectionPool(
+                        minconn=2,
+                        maxconn=POOL_MAX,
+                        database=dbname,
+                        user=user,
+                        password=password,
+                        host=host,
+                        port=port,
+                        options="-c search_path=esb_data,public"
+                    )
+                    print(f"[DB] Pool created (pooler): min=2, max={POOL_MAX}")
+                    return _connection_pool
+                except Exception as e:
+                    print(f"[DB] Pooler connection failed: {e}")
+                    _connection_pool = None
+
+        raise ValueError("No valid database URL found")
+
+
+def _conn_alive(conn):
+    """Validate a pooled connection is actually usable (drops stale ones)."""
+    try:
+        if conn.closed:
+            return False
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close()
+        conn.rollback()
+        return True
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return False
 
 
 def get_db_connection():
-    """Get a connection from the pool."""
-    pool = _get_pool()
-    try:
-        conn = pool.getconn()
-        # Ensure search_path is set for each connection
-        conn.autocommit = False
-        return conn
-    except Exception as e:
-        print(f"[DB] Error getting connection from pool: {e}")
-        raise
+    """Get a live connection from the pool (stale connections are recycled)."""
+    max_retries = 5
+
+    for attempt in range(max_retries):
+        try:
+            p = _get_pool()
+            conn = p.getconn()
+            if not _conn_alive(conn):
+                print(f"[DB] Stale pooled connection discarded (attempt {attempt + 1})")
+                try:
+                    p.putconn(conn, close=True)
+                except Exception:
+                    pass
+                continue
+            conn.autocommit = False
+            return conn
+        except psycopg2.pool.PoolError as e:
+            if attempt < max_retries - 1:
+                print(f"[DB] Pool exhausted, retrying... ({attempt + 1}/{max_retries})")
+                time.sleep(0.5 * (attempt + 1))
+                # Reset pool on exhaustion
+                global _connection_pool
+                with _pool_lock:
+                    if _connection_pool:
+                        try:
+                            _connection_pool.closeall()
+                        except:
+                            pass
+                        _connection_pool = None
+                continue
+            print(f"[DB] Pool exhausted after retries: {e}")
+            raise
+        except Exception as e:
+            print(f"[DB] Connection error: {e}")
+            raise
 
 
 def return_connection(conn):
@@ -65,16 +145,24 @@ def return_connection(conn):
         try:
             _connection_pool.putconn(conn)
         except Exception as e:
-            print(f"[DB] Error returning connection to pool: {e}")
+            print(f"[DB] Error returning connection: {e}")
+            try:
+                conn.close()
+            except:
+                pass
 
 
 def close_all_connections():
-    """Close all connections in the pool (call on shutdown)."""
+    """Close all connections in the pool."""
     global _connection_pool
-    if _connection_pool:
-        _connection_pool.closeall()
-        _connection_pool = None
-        print("[DB] All connections closed")
+    with _pool_lock:
+        if _connection_pool:
+            try:
+                _connection_pool.closeall()
+            except:
+                pass
+            _connection_pool = None
+            print("[DB] All connections closed")
 
 
 class PooledConnection:
@@ -91,22 +179,32 @@ class PooledConnection:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.cur:
-            self.cur.close()
+            try:
+                self.cur.close()
+            except:
+                pass
         if self.conn:
             if exc_type is None:
-                self.conn.commit()
+                try:
+                    self.conn.commit()
+                except:
+                    self.conn.rollback()
             else:
-                self.conn.rollback()
+                try:
+                    self.conn.rollback()
+                except:
+                    pass
             return_connection(self.conn)
-        return False  # Don't suppress exceptions
+        return False
 
 
-# Keep the old function for backward compatibility
 def get_db_connection_legacy():
-    """Legacy single-connection version (no pooling)."""
-    db_url = os.getenv('DB_POOLER_URL')
+    """Legacy single-connection version."""
+    db_url = os.getenv('DB_DIRECT_URL') or os.getenv('DATABASE_URL')
     if not db_url:
-        raise ValueError("Database URL not found in environment variables.")
+        db_url = os.getenv('DB_POOLER_URL')
+    if not db_url:
+        raise ValueError("No database URL found")
     conn = psycopg2.connect(
         db_url,
         cursor_factory=RealDictCursor,

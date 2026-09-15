@@ -1,3 +1,0 @@
-@echo off
-echo Starting CALF Ecosystem Backend (FastAPI) on port 8005...
-.\venv\Scripts\uvicorn app.main:app --reload --port 8005

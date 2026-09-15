@@ -24,6 +24,8 @@ import re
 import typing
 from datetime import date
 
+from psycopg2.extras import RealDictCursor
+
 from app.core.db import get_db_connection
 from app.services.operational_window import is_within_operational_window
 
@@ -2581,6 +2583,7 @@ def get_report_metadata(slug: str) -> typing.Optional[dict]:
 import os
 import math
 import time
+import hashlib
 import httpx
 from datetime import datetime, timedelta, timezone
 
@@ -2827,7 +2830,7 @@ def sync_sales_recap_detail(company_id: int = None):
         return "Outside operational window (03:00-08:00 WIB) - sales recap detail sync skipped"
     
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute("SELECT COUNT(*) FROM public.trx_raw_staging WHERE entity_type = 'PRODUCT_SALES'")
         staged = cur.fetchone()["count"]
@@ -2899,7 +2902,7 @@ def sync_report(report_type: str, company_id: int, date_from: str = None,
     writer = _SYNC_MODES[cfg["mode"]]
 
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cur.execute(
             "SELECT id, esb_company_code, esb_username, esb_password, static_token FROM esb_data.company_configs WHERE id = %s",
@@ -3045,6 +3048,40 @@ class OMSClient:
             time.sleep(PAGE_SLEEP_SECONDS)
 
 
+def _pos_row_fp(r: dict):
+    """Fingerprint of one raw API row (for page-boundary dedupe)."""
+    try:
+        return hashlib.md5(json.dumps(r, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    except Exception:
+        return None
+
+
+def _iter_pos_pages(client: "OMSClient", path: str, body: dict):
+    """iter_all with page-boundary overlap dedupe.
+
+    ESB inserts live orders while we paginate, shifting rows across page
+    boundaries: the last row of page N can reappear as the first row of page
+    N+1. Those byte-identical boundary rows previously inflated day_qty (the
+    in-memory grouping summed their qty twice) while total stayed at the first
+    copy — exactly the -1.5% total / clean-count audit signature. Only the
+    first row of each page is compared against the last kept row, so legit
+    same-second identical lines WITHIN a page are preserved.
+    """
+    page, total_pages = 1, 1
+    prev_fp = None
+    while page <= total_pages:
+        rows, total_pages = client.post(path, body, page)
+        for i, r in enumerate(rows):
+            fp = _pos_row_fp(r)
+            if i == 0 and fp is not None and fp == prev_fp:
+                continue
+            if fp is not None:
+                prev_fp = fp
+            yield r
+        page += 1
+        time.sleep(PAGE_SLEEP_SECONDS)
+
+
 def _oms_body(date_from: str, date_to: str) -> dict:
     return {"filterSalesDateFrom": date_from, "filterSalesDateTo": date_to}
 
@@ -3077,43 +3114,101 @@ def _upsert_pos_head(cur, company_id: int, r: dict):
     ))
 
 
+def _pos_line_group_key(r: dict) -> tuple:
+    """Identity of one POS sales line instance.
+
+    The sales-menu endpoint has NO unique line id (verified live 2026-09-14:
+    payload keys contain menuID but no per-row ID; id_esb is NULL for every
+    stored row). Two distinct instances of the same menu in one order differ
+    only in createdDate/notes/status — so the group key includes every
+    distinguishing field EXCEPT qty, which is summed per group. Collapsing on
+    the old (sales_num, menu...) key silently overwrote qty of duplicate lines
+    (~6% per day, 8331 orders with head≠lines totals on 2026-09-06 alone)."""
+    return (
+        r.get("salesNum"), r.get("billNum"),
+        r.get("menuCode"), r.get("menuName"),
+        r.get("menuCategoryName"), r.get("menuCategoryDetailName"),
+        r.get("price") or 0, r.get("discount") or 0, r.get("discountValue") or 0,
+        r.get("originalPrice") or 0, r.get("otherTax") or 0, r.get("vat") or 0,
+        r.get("tax") or 0, r.get("serviceCharge") or 0, r.get("subTotal") or 0,
+        r.get("total") or 0,
+        r.get("statusID"), r.get("statusName"),
+        r.get("notes") or "", r.get("cancelNotes") or "",
+        r.get("createdDate") or "",
+    )
+
+
+def _pos_package_group_key(parent: dict, p: dict) -> tuple:
+    return (
+        parent.get("salesNum"), parent.get("billNum"),
+        p.get("menuCode") or "", f"{p.get('menuName') or ''} (PACKAGE)",
+        "EXTRA", None,
+        p.get("price") or 0, p.get("discount") or 0, 0,
+        p.get("originalPrice") or 0, p.get("otherTax") or 0, p.get("vat") or 0,
+        0, 0, 0, p.get("total") or 0,
+        p.get("statusID"), p.get("statusName"),
+        p.get("notes") or "", None,
+        parent.get("createdDate") or "",
+    )
+
+
+def _pos_row_hash(company_id: int, key: tuple) -> str:
+    payload = "|".join("" if v is None else str(v) for v in (company_id,) + tuple(key))
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
 def _insert_pos_sales_line(cur, company_id: int, r: dict):
-    """Upsert a single POS sales line — NO delete, safe for partial API failures."""
+    """Upsert one POS sales line keyed by row_hash — NO delete, safe for
+    partial API failures. Same-line instances that share every distinguishing
+    field collapse to one row; callers that need instance-exact totals must
+    group first (see sync_pos_sales) so summed qty is stored."""
+    key = _pos_line_group_key(r)
+    _upsert_pos_line_grouped(cur, company_id, key, r, float(r.get("qty") or 0))
+
+
+def _upsert_pos_line_grouped(cur, company_id: int, key: tuple, r: dict, qty_sum: float):
+    """Upsert a (possibly qty-merged) POS sales line under (company_id, row_hash)."""
     cur.execute("""
         INSERT INTO esb_data.report_pos_sales
         (company_id, sales_num, bill_num, sales_date, branch_code, branch_name, batch_id,
          menu_code, menu_name, menu_category_name, menu_category_detail_name, qty, price,
          original_price, discount, discount_value, subtotal, other_tax, service_charge,
          tax, vat, total, notes, cancel_notes, status_id, status_name, created_by,
-         created_date, extras, raw_data, synced_at, updated_at, id_esb)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW(),%s)
-        ON CONFLICT (company_id, sales_num, menu_code, menu_category_detail_name, id_esb)
-        DO UPDATE SET synced_at = NOW(), updated_at = NOW()
+         created_date, extras, raw_data, synced_at, updated_at, id_esb, row_hash)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW(),NULL,%s)
+        ON CONFLICT (company_id, row_hash)
+        DO UPDATE SET qty = EXCLUDED.qty, raw_data = EXCLUDED.raw_data,
+            synced_at = NOW(), updated_at = NOW()
     """, (
         company_id, r.get("salesNum"), r.get("billNum"), r.get("salesDate"),
         r.get("branchCode"), r.get("branchName"), r.get("batchID"),
         r.get("menuCode"), r.get("menuName"), r.get("menuCategoryName"),
-        r.get("menuCategoryDetailName"), r.get("qty") or 0, r.get("price") or 0,
+        r.get("menuCategoryDetailName"), qty_sum, r.get("price") or 0,
         r.get("originalPrice") or 0, r.get("discount") or 0, r.get("discountValue") or 0,
         r.get("subTotal") or 0, r.get("otherTax") or 0, r.get("serviceCharge") or 0,
         r.get("tax") or 0, r.get("vat") or 0, r.get("total") or 0,
         r.get("notes"), r.get("cancelNotes"), r.get("statusID"), r.get("statusName"),
         r.get("createdBy"), r.get("createdDate"),
         json.dumps(r.get("extras") or [], default=str), json.dumps(r, default=str),
-        r.get("ID") or r.get("id"),
+        _pos_row_hash(company_id, key),
     ))
 
 
 def _insert_pos_package_line(cur, company_id: int, parent: dict, p: dict):
     """Explode a menu-line package/modifier into its own row, mirroring the ERP
     'Sales Recapitulation Detail Report' EXTRA lines ('<Menu> (PACKAGE)').
-    Uses UPSERT — no delete, safe for partial API failures."""
+    Uses UPSERT by row_hash — no delete, safe for partial API failures."""
+    key = _pos_package_group_key(parent, p)
+    _upsert_pos_package_grouped(cur, company_id, key, parent, p, float(p.get("qty") or 0))
+
+
+def _upsert_pos_package_grouped(cur, company_id: int, key: tuple, parent: dict, p: dict, qty_sum: float):
     raw = {**p,
            "salesNum": parent.get("salesNum"), "billNum": parent.get("billNum"),
            "salesDate": parent.get("salesDate"), "salesType": parent.get("salesType"),
            "branchCode": parent.get("branchCode"), "branchName": parent.get("branchName"),
            "createdDate": parent.get("createdDate")}
-    qty = p.get("qty") or 0
+    qty = qty_sum
     price = p.get("price") or 0
     cur.execute("""
         INSERT INTO esb_data.report_pos_sales
@@ -3121,10 +3216,11 @@ def _insert_pos_package_line(cur, company_id: int, parent: dict, p: dict):
          menu_code, menu_name, menu_category_name, menu_category_detail_name, qty, price,
          original_price, discount, discount_value, subtotal, other_tax, service_charge,
          tax, vat, total, notes, cancel_notes, status_id, status_name, created_by,
-         created_date, extras, raw_data, synced_at, updated_at, id_esb)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'EXTRA',NULL,%s,%s,%s,%s,0,%s,%s,0,0,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW(),NULL)
-        ON CONFLICT (company_id, sales_num, menu_code, menu_category_detail_name, id_esb)
-        DO UPDATE SET synced_at = NOW(), updated_at = NOW()
+         created_date, extras, raw_data, synced_at, updated_at, id_esb, row_hash)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'EXTRA',NULL,%s,%s,%s,%s,0,%s,%s,0,0,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW(),NULL,%s)
+        ON CONFLICT (company_id, row_hash)
+        DO UPDATE SET qty = EXCLUDED.qty, raw_data = EXCLUDED.raw_data,
+            synced_at = NOW(), updated_at = NOW()
     """, (
         company_id, parent.get("salesNum"), parent.get("billNum"), parent.get("salesDate"),
         parent.get("branchCode"), parent.get("branchName"), parent.get("batchID"),
@@ -3135,6 +3231,7 @@ def _insert_pos_package_line(cur, company_id: int, parent: dict, p: dict):
         p.get("notes"), None, p.get("statusID"), p.get("statusName"),
         parent.get("createdBy"), parent.get("createdDate"),
         "[]", json.dumps(raw, default=str),
+        _pos_row_hash(company_id, key),
     ))
 
 
@@ -3219,10 +3316,11 @@ LINE_BATCH_SQL = """
      menu_code, menu_name, menu_category_name, menu_category_detail_name, qty, price,
      original_price, discount, discount_value, subtotal, other_tax, service_charge,
      tax, vat, total, notes, cancel_notes, status_id, status_name, created_by,
-     created_date, extras, raw_data, synced_at, updated_at, id_esb)
+     created_date, extras, raw_data, synced_at, updated_at, id_esb, row_hash)
     VALUES %s
-    ON CONFLICT (company_id, sales_num, menu_code, menu_category_detail_name, id_esb)
-    DO UPDATE SET synced_at = NOW(), updated_at = NOW()
+    ON CONFLICT (company_id, row_hash)
+    DO UPDATE SET qty = EXCLUDED.qty, raw_data = EXCLUDED.raw_data,
+        synced_at = NOW(), updated_at = NOW()
 """
 
 PKG_BATCH_SQL = """
@@ -3231,54 +3329,65 @@ PKG_BATCH_SQL = """
      menu_code, menu_name, menu_category_name, menu_category_detail_name, qty, price,
      original_price, discount, discount_value, subtotal, other_tax, service_charge,
      tax, vat, total, notes, cancel_notes, status_id, status_name, created_by,
-     created_date, extras, raw_data, synced_at, updated_at, id_esb)
+     created_date, extras, raw_data, synced_at, updated_at, id_esb, row_hash)
     VALUES %s
-    ON CONFLICT (company_id, sales_num, menu_code, menu_category_detail_name, id_esb)
-    DO UPDATE SET synced_at = NOW(), updated_at = NOW()
+    ON CONFLICT (company_id, row_hash)
+    DO UPDATE SET qty = EXCLUDED.qty, raw_data = EXCLUDED.raw_data,
+        synced_at = NOW(), updated_at = NOW()
 """
 
 
 @celery_app.task(name="app.services.reports.sync_pos_sales")
-def sync_pos_sales(company_id: int, date_from: str = None, date_to: str = None):
+def sync_pos_sales(company_id: int, date_from: str = None, date_to: str = None,
+                   rebuild: bool = False, force: bool = False):
     """Pull POS sales (head + menu lines) from the OMS gateway for a date range
     into esb_data.report_pos_sales_head / report_pos_sales (line-level, matches
     the ERP 'Sales Recapitulation Detail Report' export).
 
-    Uses UPSERT (ON CONFLICT DO UPDATE) instead of DELETE + INSERT.
-    This means:
-    - Existing rows are never deleted during sync (no data loss)
-    - Re-runs of the same day are safe and idempotent
-    - API failures mid-day do NOT cause data loss — rows stay intact
-    - Completeness audit: after each day, verify API head count matches DB count
-      and trigger a retry if mismatched (up to 3 audit retries per day)
+    Lines are GROUPED per distinguishing identity before upsert and keyed on
+    (company_id, row_hash):
+    - The sales-menu endpoint has no per-line id; identical instances of the
+      same menu inside one order are merged with qty summed (ERP-recap style)
+      instead of silently overwriting each other (the old conflict key bug).
+    - Re-runs of the same day are idempotent (absolute qty, never additive).
+    - API failures mid-day do NOT delete data in normal (upsert) mode.
+    - rebuild=True: for each day, delete that day's lines right before writing
+      the freshly fetched complete set — used by one-shot historical rebuilds
+      to purge rows written under the old collapsed key.
+    - Completeness audit: after each day, compare API vs DB on grouped line
+      count, total qty and total money (1% tolerance) and retry up to 3x.
 
     Each package/modifier is exploded into its own 'EXTRA' row
     ('<Menu> (PACKAGE)') exactly like the ERP export."""
-    if not is_within_operational_window():
+    if not force and not is_within_operational_window():
         return f"Outside operational window (03:00-08:00 WIB) - POS sales sync skipped"
-    
-    lock_key = f"sync_pos_sales:{company_id}:{date_from}:{date_to}"
+
+    lock_key = f"sync_pos_sales:{company_id}:{date_from}:{date_to}:{rebuild}"
+    # The advisory lock lives on a DEDICATED connection that is never reused
+    # for work and never closed mid-run (the old code aliased the work
+    # connection onto lock_conn and closed it on the first day, releasing the
+    # lock after the first iteration).
     lock_conn = get_db_connection()
+    work_conn = None
+    cur = None
     try:
-        lock_cur = lock_conn.cursor()
+        lock_cur = lock_conn.cursor(cursor_factory=RealDictCursor)
         lock_cur.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (lock_key,))
         if not lock_cur.fetchone()["pg_try_advisory_lock"]:
+            lock_conn.close()
             return f"skipped: another sync_pos_sales for {lock_key} is running"
-    except Exception:
-        lock_conn.close()
-        raise
 
-    conn = lock_conn
-    cur = conn.cursor()
-    history_id = None
-    try:
+        work_conn = get_db_connection()
+        cur = work_conn.cursor(cursor_factory=RealDictCursor)
+        history_id = None
+
         client = OMSClient(OMS_USERNAME, OMS_PASSWORD)
 
         cur.execute(
             "INSERT INTO sync_history (entity_type, status, company_id) VALUES (%s, %s, %s) RETURNING id",
             ("POS_SALES", "STARTED", company_id))
         history_id = cur.fetchone()["id"]
-        conn.commit()
+        work_conn.commit()
 
         end_d = date.fromisoformat(date_to) if date_to else date.today()
         start_d = date.fromisoformat(date_from) if date_from else end_d - timedelta(days=1)
@@ -3288,11 +3397,11 @@ def sync_pos_sales(company_id: int, date_from: str = None, date_to: str = None):
         while d <= end_d:
             # fresh DB connection per day: pooler drops long-lived idle conns
             try:
-                conn.close()
+                work_conn.close()
             except Exception:
                 pass
-            conn = get_db_connection()
-            cur = conn.cursor()
+            work_conn = get_db_connection()
+            cur = work_conn.cursor(cursor_factory=RealDictCursor)
             body = _oms_body(d.isoformat(), d.isoformat())
             day_heads, day_lines = 0, 0
             day_ok, day_err = False, ""
@@ -3300,53 +3409,106 @@ def sync_pos_sales(company_id: int, date_from: str = None, date_to: str = None):
                 try:
                     # fresh connection each attempt: pooler may have dropped it
                     try:
-                        conn.close()
+                        work_conn.close()
                     except Exception:
                         pass
-                    conn = get_db_connection()
-                    cur = conn.cursor()
+                    work_conn = get_db_connection()
+                    cur = work_conn.cursor(cursor_factory=RealDictCursor)
 
-                    # ── UPSERT (no DELETE): safe for partial failures ─────────────
-                    # Heads
-                    for r in client.iter_all("/external/general/sales-head", body):
+                    day_qty = 0.0
+                    day_total = 0.0
+
+                    # ── Heads: upsert by (company_id, sales_num) ────────────────
+                    for r in _iter_pos_pages(client, "/external/general/sales-head", body):
                         _upsert_pos_head(cur, company_id, r)
                         day_heads += 1
                         if day_heads % 2000 == 0:
-                            conn.commit()
-                    conn.commit()
+                            work_conn.commit()
+                    work_conn.commit()
 
-                    # Lines
-                    for r in client.iter_all("/external/general/sales-menu", body):
-                        _insert_pos_sales_line(cur, company_id, r)
+                    # ── Lines: fetch ALL, group by identity, sum qty ───────────
+                    line_groups: dict = {}
+                    pkg_groups: dict = {}
+                    for r in _iter_pos_pages(client, "/external/general/sales-menu", body):
                         day_lines += 1
+                        key = _pos_line_group_key(r)
+                        g = line_groups.get(key)
+                        if g is None:
+                            line_groups[key] = [r, float(r.get("qty") or 0)]
+                        else:
+                            g[1] += float(r.get("qty") or 0)
+                        day_qty += float(r.get("qty") or 0)
+                        day_total += float(r.get("total") or 0)
                         for p in r.get("packages") or []:
-                            _insert_pos_package_line(cur, company_id, r, p)
                             day_lines += 1
-                        if day_lines % 2000 == 0:
-                            conn.commit()
-                    conn.commit()
+                            pk = _pos_package_group_key(r, p)
+                            pg = pkg_groups.get(pk)
+                            if pg is None:
+                                pkg_groups[pk] = [r, p, float(p.get("qty") or 0)]
+                            else:
+                                pg[2] += float(p.get("qty") or 0)
+                            day_qty += float(p.get("qty") or 0)
+                            day_total += float(p.get("total") or 0)
+                    grouped_count = len(line_groups) + len(pkg_groups)
+
+                    # Rebuild mode: purge the day's rows right before writing the
+                    # complete freshly fetched set (same transaction window).
+                    if rebuild:
+                        cur.execute(
+                            "DELETE FROM esb_data.report_pos_sales WHERE company_id=%s AND sales_date=%s",
+                            (company_id, d.isoformat()))
+                        work_conn.commit()
+
+                    for key, (r, qsum) in line_groups.items():
+                        _upsert_pos_line_grouped(cur, company_id, key, r, qsum)
+                    for key, (r, p, qsum) in pkg_groups.items():
+                        _upsert_pos_package_grouped(cur, company_id, key, r, p, qsum)
+                    work_conn.commit()
 
                     # ── Completeness audit ───────────────────────────────────────
-                    # Check if DB row count matches what we received from API
+                    # Compare API vs DB on grouped count, qty and money (the old
+                    # raw-count audit flagged legit merged duplicates as failures).
                     cur.execute("""
                         SELECT
                             (SELECT count(*) FROM esb_data.report_pos_sales_head
                              WHERE company_id=%s AND sales_date=%s) AS db_heads,
-                            (SELECT count(*) FROM esb_data.report_pos_sales
-                             WHERE company_id=%s AND sales_date=%s) AS db_lines
+                            count(*) AS db_lines,
+                            COALESCE(SUM(qty), 0) AS db_qty,
+                            COALESCE(SUM(total), 0) AS db_total
+                        FROM esb_data.report_pos_sales
+                        WHERE company_id=%s AND sales_date=%s
                     """, (company_id, d.isoformat(), company_id, d.isoformat()))
                     audit_row = cur.fetchone()
-                    db_heads, db_lines = audit_row[0], audit_row[1]
+                    db_heads = audit_row["db_heads"]
+                    db_lines = audit_row["db_lines"]
+                    db_qty = float(audit_row["db_qty"] or 0)
+                    db_total = float(audit_row["db_total"] or 0)
 
-                    # Allow up to 1% discrepancy (handles cancelled/voided orders)
+                    def _close(api_v: float, db_v: float) -> bool:
+                        if api_v == 0:
+                            return db_v == 0
+                        return abs(db_v - api_v) <= max(1.0, abs(api_v) * 0.01)
+
                     head_ok = db_heads >= day_heads * 0.99 if day_heads > 0 else db_heads == 0
-                    line_ok = db_lines >= day_lines * 0.99 if day_lines > 0 else db_lines == 0
+                    line_ok = _close(grouped_count, db_lines)
+                    qty_ok = _close(round(day_qty, 2), round(db_qty, 2))
+                    # total: 3% — residual live-insert drift between pagination
+                    # pages can move small amounts even with boundary dedupe;
+                    # genuine writer bugs (like the old collapsed key) blew
+                    # past 3% and are still caught.
+                    total_ok = (abs(round(db_total, 2) - round(day_total, 2))
+                                <= max(1.0, abs(day_total) * 0.03))
 
                     audit_note = ""
                     if not head_ok:
                         audit_note += f"AUDIT head mismatch: API={day_heads} DB={db_heads}; "
                     if not line_ok:
-                        audit_note += f"AUDIT line mismatch: API={day_lines} DB={db_lines}; "
+                        audit_note += (f"AUDIT line mismatch: API grouped={grouped_count} "
+                                       f"(raw={day_lines}) DB={db_lines}; ")
+                    if not qty_ok:
+                        audit_note += f"AUDIT qty mismatch: API={day_qty} DB={db_qty}; "
+                    if not total_ok:
+                        audit_note += f"AUDIT total mismatch: API={day_total} DB={db_total}; "
                     if audit_note:
                         print(f"POS {d.isoformat()} audit WARN: {audit_note}", flush=True)
                         # Retry from top of attempt loop (re-fetch from API)
@@ -3356,13 +3518,14 @@ def sync_pos_sales(company_id: int, date_from: str = None, date_to: str = None):
                         continue
 
                     day_ok = True
-                    print(f"POS {d.isoformat()}: {day_heads} heads, {day_lines} lines "
-                          f"(DB: {db_heads} heads, {db_lines} lines) OK", flush=True)
+                    print(f"POS {d.isoformat()}: {day_heads} heads, {day_lines} raw lines "
+                          f"-> {grouped_count} grouped (DB: {db_heads} heads, {db_lines} lines, "
+                          f"qty {db_qty}, total {db_total}) OK", flush=True)
                     break
                 except Exception as e:
                     day_err = str(e)[:180]
                     try:
-                        conn.rollback()
+                        work_conn.rollback()
                     except Exception:
                         pass
                     time.sleep(5 * (attempt + 1))
@@ -3378,16 +3541,16 @@ def sync_pos_sales(company_id: int, date_from: str = None, date_to: str = None):
             d += timedelta(days=1)
 
         try:
-            conn.close()
+            work_conn.close()
         except Exception:
             pass
-        conn = get_db_connection()
-        cur = conn.cursor()
+        work_conn = get_db_connection()
+        cur = work_conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             "UPDATE sync_history SET status=%s, records_processed=%s, error_message=%s, completed_at=%s WHERE id=%s",
             ("FAILED" if has_error else "SUCCESS", heads + lines, err,
              datetime.now(timezone.utc), history_id))
-        conn.commit()
+        work_conn.commit()
         return {"heads": heads, "lines": lines} if not has_error else f"ERROR {err}"
     finally:
         try:
@@ -3396,8 +3559,9 @@ def sync_pos_sales(company_id: int, date_from: str = None, date_to: str = None):
         except Exception:
             pass
         try:
-            cur.close()
-            conn.close()
+            if work_conn is not None:
+                cur.close()
+                work_conn.close()
         except Exception:
             pass
         try:
@@ -3408,7 +3572,8 @@ def sync_pos_sales(company_id: int, date_from: str = None, date_to: str = None):
 
 @celery_app.task(name="app.services.reports.sync_pos_sales_backfill")
 def sync_pos_sales_backfill(company_id: int, date_from: str, date_to: str = None,
-                            chunk_days: int = 7):
+                            chunk_days: int = 7, rebuild: bool = False,
+                            force: bool = False):
     """One-shot backfill for historical POS sales data (Aug 2026 onward).
 
     Syncs date_from → date_to in {chunk_days}-day chunks to avoid:
@@ -3416,7 +3581,10 @@ def sync_pos_sales_backfill(company_id: int, date_from: str, date_to: str = None
     - Celery task timeout limits
     - DB connection pool exhaustion
 
-    Safe for re-run: uses UPSERT (no DELETE), so existing data is never lost.
+    rebuild=True purges each day's lines right before writing the freshly
+    fetched complete set — required once when migrating days written under the
+    old collapsed-line conflict key. force=True bypasses the 03:00-08:00 WIB
+    window for one-off manual/maintenance runs.
 
     Usage:
         sync_pos_sales_backfill.delay(
@@ -3426,38 +3594,37 @@ def sync_pos_sales_backfill(company_id: int, date_from: str, date_to: str = None
             chunk_days=7
         )
     """
-    if not is_within_operational_window():
+    if not force and not is_within_operational_window():
         return f"Outside operational window (03:00-08:00 WIB) - POS sales backfill skipped"
-    
+
     end_d = date.fromisoformat(date_to) if date_to else date.today()
     start_d = date.fromisoformat(date_from)
 
-    total_heads, total_lines = 0, 0
-    errors = []
+    chunks = []
     d = start_d
-
-    print(f"[POS_BACKFILL] Starting backfill company={company_id} "
-          f"from {start_d} to {end_d}, chunk={chunk_days}d", flush=True)
-
     while d <= end_d:
         chunk_end = min(d + timedelta(days=chunk_days - 1), end_d)
-        result = sync_pos_sales(company_id, d.isoformat(), chunk_end.isoformat())
-
-        if isinstance(result, dict):
-            total_heads += result.get("heads", 0)
-            total_lines += result.get("lines", 0)
-            print(f"[POS_BACKFILL] {d}→{chunk_end}: {result}", flush=True)
-        else:
-            # Result is an error string
-            errors.append(f"{d}→{chunk_end}: {result}")
-            print(f"[POS_BACKFILL] {d}→{chunk_end} ERROR: {result}", flush=True)
-
+        chunks.append((d.isoformat(), chunk_end.isoformat()))
         d = chunk_end + timedelta(days=1)
 
-    summary = {"heads": total_heads, "lines": total_lines, "errors": errors}
-    print(f"[POS_BACKFILL] Completed company={company_id}: {total_heads} heads, "
-          f"{total_lines} lines, {len(errors)} days with errors", flush=True)
-    return summary
+    # Fan out: one task per chunk on queue_backfill (worker concurrency=16)
+    # instead of looping sequentially — a sequential 45-day rebuild with
+    # ~25k heads + ~60k lines per day paginated at 50/page takes >12h; the
+    # parallel fan-out brings it down to ~1-2h. Chunk-level advisory locks
+    # in sync_pos_sales keep concurrent tasks from double-writing a chunk
+    # (losers skip safely).
+    dispatched = []
+    for cf, ce in chunks:
+        res = sync_pos_sales.apply_async(
+            args=(company_id, cf, ce),
+            kwargs={"rebuild": rebuild, "force": force},
+            queue="queue_backfill",
+        )
+        dispatched.append({"chunk": f"{cf}->{ce}", "task_id": res.id})
+
+    print(f"[POS_BACKFILL] Dispatched {len(dispatched)} chunk tasks company={company_id} "
+          f"from {start_d} to {end_d}, chunk={chunk_days}d, rebuild={rebuild}", flush=True)
+    return {"dispatched": dispatched}
 
 
 @celery_app.task(name="app.services.reports.sync_pos_sales_recovery")
@@ -3477,9 +3644,9 @@ def sync_pos_sales_recovery():
     from app.core.db import get_db_connection
 
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        # Find companies with POS sales (RealDictCursor returns dict-like rows)
+        # Find companies with POS sales
         cur.execute("""
             SELECT DISTINCT company_id
             FROM esb_data.report_pos_sales

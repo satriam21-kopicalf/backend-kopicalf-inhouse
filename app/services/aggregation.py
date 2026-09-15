@@ -40,9 +40,9 @@ def _redis() -> redis_lib.Redis:
     return _redis_client
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Master Data Entity Tables Mapping
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 MASTER_ENTITY_TABLES = {
     "BRANCH": "md_outlets",
@@ -69,9 +69,9 @@ MASTER_ENTITY_TABLES = {
 MASTER_SYNC_ENTITIES = list(MASTER_ENTITY_TABLES.keys())
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Cache Helpers
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _cache_key(prefix: str, *args) -> str:
     """Generate a cache key from prefix and arguments."""
@@ -108,9 +108,9 @@ def _invalidate_cache(pattern: str):
         pass
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Company Data Fetchers (Parallel Execution)
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _fetch_company_master_counts(company_id: int, company_code: str) -> dict:
     """Fetch all master entity counts for ONE company.
@@ -282,9 +282,9 @@ def _fetch_company_direct_report(company_id: int, company_code: str, report_type
         conn.close()
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Parallel Fetching Engine
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def fetch_all_companies_master_summary(use_cache: bool = True) -> dict:
     """Fetch master data summary for ALL active companies in PARALLEL.
@@ -622,9 +622,9 @@ def fetch_all_companies_direct_report(report_type: str, date_from: date,
         conn.close()
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Aggregated Summary View (Materialized for Dashboard)
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def get_integration_hub_summary() -> dict:
     """Get the Integration Hub dashboard summary in a SINGLE optimized query.
@@ -749,9 +749,9 @@ def get_integration_hub_summary() -> dict:
         conn.close()
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Cache Invalidation
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def invalidate_all_parallel_cache():
     """Invalidate all parallel fetching cache entries."""
@@ -764,11 +764,11 @@ def invalidate_master_cache():
     _invalidate_cache("parallel:integration_hub*")
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Phase 5: Analysis Snapshot Refresh
 # Replaces ad-hoc COGS queries with pre-computed daily snapshots
 # Called by Celery task: queue_report, after delta sync completes
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def refresh_cogs_snapshot(company_id: int, period: date) -> dict:
     """Compute and store COGS ratio metrics for all active branches for one period.
@@ -825,7 +825,7 @@ def refresh_cogs_snapshot(company_id: int, period: date) -> dict:
                     skipped += 1
                     continue
 
-                # COGS from stock movements (usage + waste + transfer_out × cost_price)
+                # COGS from stock movements (usage + waste + transfer_out Ã— cost_price)
                 cur.execute("""
                     SELECT COALESCE(SUM(sm.qty * COALESCE(p.cost_price, 0)), 0)
                     FROM esb_data.stock_movements sm
@@ -836,7 +836,7 @@ def refresh_cogs_snapshot(company_id: int, period: date) -> dict:
                 """, (company_id, branch_id, period))
                 cogs = float(cur.fetchone()[0] or 0)
 
-                # Theoretical usage from BOM × POS sales
+                # Theoretical usage from BOM Ã— POS sales
                 cur.execute("""
                     SELECT COALESCE(SUM(
                         shl.qty * COALESCE(
@@ -902,9 +902,9 @@ def refresh_cogs_snapshot(company_id: int, period: date) -> dict:
             "written": written, "skipped": skipped, "errors": errors}
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Celery Tasks (queue_report)
-# ─────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @celery_app.task(name="app.services.aggregation.refresh_cogs_snapshot_task",
                  bind=True, max_retries=3, default_retry_delay=60)
@@ -986,7 +986,7 @@ def refresh_usage_ratio(company_id: int, period: date) -> dict:
     """Compute and store per-product usage ratio for all active branches.
 
     Compares actual material consumption (stock movements) against
-    theoretical amounts derived from BOM × POS sales quantities.
+    theoretical amounts derived from BOM Ã— POS sales quantities.
 
     Args:
         company_id: Company ID
@@ -1023,7 +1023,7 @@ def refresh_usage_ratio(company_id: int, period: date) -> dict:
                         p.code           AS product_code,
                         p.name           AS product_name,
                         c.name           AS category_name,
-                        -- Theoretical: POS qty × BOM material qty
+                        -- Theoretical: POS qty Ã— BOM material qty
                         COALESCE(SUM(
                             shl.qty * COALESCE(
                                 (SELECT SUM(bm.qty * bm.uom_qty)
@@ -1046,7 +1046,7 @@ def refresh_usage_ratio(company_id: int, period: date) -> dict:
                                 0
                             )
                         ), 0) AS teoretis_cost,
-                        -- Actual cost = stock movement qty × product cost_price
+                        -- Actual cost = stock movement qty Ã— product cost_price
                         COALESCE(SUM(
                             CASE WHEN sm.movement_type IN ('USAGE','WASTE','TRANSFER_OUT')
                                  THEN sm.qty * COALESCE(p.cost_price, 0) ELSE 0 END
@@ -1115,83 +1115,4 @@ def refresh_usage_ratio(company_id: int, period: date) -> dict:
     return {"company_id": company_id, "period": period_label,
             "written": written, "skipped": skipped, "errors": errors}
 
-
-# ─────────────────────────────────────────────────────────────────────────
-# Celery Tasks (queue_report)
-# ─────────────────────────────────────────────────────────────────────────
-
-@celery_app.task(name="app.services.aggregation.refresh_cogs_snapshot_task",
-                 bind=True, max_retries=3, default_retry_delay=60)
-def refresh_cogs_snapshot_task(self: Task, company_id: int, period_str: str) -> dict:
-    """Refresh COGS snapshot for one company and one period.
-
-    Args:
-        company_id: Company ID
-        period_str: Period as 'YYYY-MM' string
-
-    Retry: 3x with 60s backoff on failure.
-    """
-    try:
-        from datetime import datetime
-        period = datetime.strptime(period_str, "%Y-%m").date().replace(day=1)
-    except ValueError as e:
-        return {"error": f"Invalid period format {period_str}: {e}"}
-    try:
-        result = refresh_cogs_snapshot(company_id, period)
-        if result["errors"]:
-            raise RuntimeError(f"{len(result['errors'])} branch errors: {result['errors'][:2]}")
-        return result
-    except Exception as exc:
-        raise self.retry(exc=exc) from exc
-
-
-@celery_app.task(name="app.services.aggregation.refresh_usage_ratio_task",
-                 bind=True, max_retries=3, default_retry_delay=60)
-def refresh_usage_ratio_task(self: Task, company_id: int, period_str: str) -> dict:
-    """Refresh usage ratio for one company and one period."""
-    try:
-        from datetime import datetime
-        period = datetime.strptime(period_str, "%Y-%m").date().replace(day=1)
-    except ValueError as e:
-        return {"error": f"Invalid period format {period_str}: {e}"}
-    try:
-        result = refresh_usage_ratio(company_id, period)
-        if result["errors"]:
-            raise RuntimeError(f"{len(result['errors'])} branch errors: {result['errors'][:2]}")
-        return result
-    except Exception as exc:
-        raise self.retry(exc=exc) from exc
-
-
-@celery_app.task(name="app.services.aggregation.refresh_all_analysis")
-def refresh_all_analysis(period_str: str) -> dict:
-    """Refresh all analysis snapshots for all active companies for one period.
-
-    Dispatches one pair of (cogs + usage_ratio) tasks per company.
-    Designed to run after delta sync completes (daily, queue_report).
-    """
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT id FROM company_configs WHERE is_active = TRUE")
-        companies = [row[0] for row in cur.fetchall()]
-    finally:
-        cur.close()
-        conn.close()
-
-    results = []
-    for cid in companies:
-        cogs_result = refresh_cogs_snapshot_task.delay(cid, period_str)
-        usage_result = refresh_usage_ratio_task.delay(cid, period_str)
-        results.append({
-            "company_id": cid,
-            "cogs": cogs_result.id,
-            "usage_ratio": usage_result.id,
-        })
-
-    return {
-        "period": period_str,
-        "companies_dispatched": len(companies),
-        "tasks": results,
-    }
 

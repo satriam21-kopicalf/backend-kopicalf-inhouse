@@ -1,11 +1,23 @@
 services:
   # Redis - Message Broker & Cache
+  # Hardened 2026-09-14: was published on 0.0.0.0:6379 with NO password and
+  # answered PING from the public internet. Now bound to host loopback only and
+  # protected with --requirepass (set REDIS_PASSWORD in .env); REDIS_URL /
+  # CELERY_BROKER_URL / CELERY_RESULT_BACKEND must include the password.
   redis:
     image: redis:7-alpine
     container_name: backend-kopicalf-inhouse-redis-1
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   # FastAPI HTTP Server
   api:
@@ -27,6 +39,8 @@ services:
       start_period: 10s
 
   # Celery Beat Scheduler
+  # The image ships an HTTP /health healthcheck meant for the API container;
+  # beat has no HTTP server, so the inherited check is disabled here.
   celery_beat:
     image: ${DOCKER_IMAGE:-kopicalf/calf-backend}:${IMAGE_TAG:-latest}
     container_name: backend-kopicalf-inhouse-celery_beat-1
@@ -36,6 +50,8 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    healthcheck:
+      disable: true
 
   # Master-data lane: infrequent master sync
   worker_master:
@@ -47,6 +63,12 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.core.worker inspect ping -d celery@$$HOSTNAME | grep -q pong"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
 
   # Daily lane: TRX delta + direct reports
   worker_trx_daily:
@@ -58,6 +80,12 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.core.worker inspect ping -d celery@$$HOSTNAME | grep -q pong"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
 
   # Historical backfill (night window 00:00-08:00 WIB)
   worker_backfill:
@@ -69,6 +97,12 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.core.worker inspect ping -d celery@$$HOSTNAME | grep -q pong"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
 
   # Report queries + async exports
   worker_report:
@@ -80,3 +114,9 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.core.worker inspect ping -d celery@$$HOSTNAME | grep -q pong"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
