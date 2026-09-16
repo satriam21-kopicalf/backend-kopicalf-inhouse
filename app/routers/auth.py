@@ -49,13 +49,9 @@ def _load_user(cur, user_id: int) -> Optional[dict]:
     cur.execute("""
         SELECT u.id, u.email, u.username, u.full_name, u.is_active,
                u.last_login_at, u.employee_id,
-               r.code AS role_code, r.name AS role_name,
-               e.employee_code, e.position, e.division, e.department, e.rate_class,
-               e.branch_id AS branch_id, mb.name AS branch_name
+               r.code AS role_code, r.name AS role_name
         FROM internal.users u
         JOIN internal.roles r ON r.id = u.role_id
-        LEFT JOIN internal.employees e ON e.id = u.employee_id
-        LEFT JOIN esb_data.master_branch mb ON mb.id = e.branch_id
         WHERE u.id = %s
     """, (user_id,))
     row = cur.fetchone()

@@ -15,6 +15,8 @@ from app.routers import auth
 app.include_router(auth.router)
 from app.routers import internal_admin
 app.include_router(internal_admin.router)
+from app.routers import approval_lines
+app.include_router(approval_lines.router)
 
 # Allow CORS for Next.js frontend
 app.add_middleware(
@@ -28,6 +30,199 @@ app.add_middleware(
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "service": "calf-backend"}
+
+# ─────────────────────────────────────────────────────────────────────────
+# BRANCHES ENDPOINT
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/branches")
+async def list_branches(
+    branch_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List all branches with optional filtering by type."""
+    import os
+    from psycopg2.extras import RealDictCursor
+
+    db_url = os.getenv('DB_POOLER_URL') or os.getenv('DATABASE_URL') or os.getenv('DB_DIRECT_URL')
+    if not db_url:
+        return []
+
+    try:
+        import psycopg2
+        conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor, options="-c search_path=esb_data,public")
+        cur = conn.cursor()
+
+        # Check if master_branch table exists
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = 'esb_data'
+                AND table_name = 'master_branch'
+            );
+        """)
+        if not cur.fetchone()['exists']:
+            cur.close()
+            conn.close()
+            return []
+
+        query = """
+            SELECT
+                id, branch_code AS code, name,
+                COALESCE(raw_data->>'branchType', 'OUTLET') AS branch_type,
+                raw_data
+            FROM esb_data.master_branch
+            WHERE 1=1
+        """
+        params = []
+        if branch_type:
+            query += " AND COALESCE(raw_data->>'branchType', 'OUTLET') = %s"
+            params.append(branch_type)
+
+        query += " ORDER BY name LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        cur.execute(query, params)
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return rows
+    except Exception as e:
+        print(f"Error fetching branches: {e}")
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# DEPARTMENTS ENDPOINT
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/departments")
+async def list_departments(
+    division_id: int | None = None,
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List all departments with optional filtering."""
+    import os
+    from psycopg2.extras import RealDictCursor
+
+    db_url = os.getenv('DB_POOLER_URL') or os.getenv('DATABASE_URL') or os.getenv('DB_DIRECT_URL')
+    if not db_url:
+        return []
+
+    try:
+        import psycopg2
+        conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor, options="-c search_path=esb_data,public")
+        cur = conn.cursor()
+
+        # Check if master_department table exists
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = 'esb_data'
+                AND table_name = 'master_department'
+            );
+        """)
+        if not cur.fetchone()['exists']:
+            cur.close()
+            conn.close()
+            return []
+
+        query = """
+            SELECT
+                id, code, name, division_id, division_name,
+                manager_id, manager_name,
+                employee_count, is_active AS status,
+                created_at, updated_at
+            FROM esb_data.master_department
+            WHERE 1=1
+        """
+        params = []
+        if division_id:
+            query += " AND division_id = %s"
+            params.append(division_id)
+        if status:
+            query += " AND is_active = %s"
+            params.append(status == 'active')
+
+        query += " ORDER BY name LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        cur.execute(query, params)
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return rows
+    except Exception as e:
+        print(f"Error fetching departments: {e}")
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# DIVISIONS ENDPOINT
+# ─────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/divisions")
+async def list_divisions(
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List all divisions with optional filtering."""
+    import os
+    from psycopg2.extras import RealDictCursor
+
+    db_url = os.getenv('DB_POOLER_URL') or os.getenv('DATABASE_URL') or os.getenv('DB_DIRECT_URL')
+    if not db_url:
+        return []
+
+    try:
+        import psycopg2
+        conn = psycopg2.connect(db_url, cursor_factory=RealDictCursor, options="-c search_path=esb_data,public")
+        cur = conn.cursor()
+
+        # Check if master_division table exists
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = 'esb_data'
+                AND table_name = 'master_division'
+            );
+        """)
+        if not cur.fetchone()['exists']:
+            cur.close()
+            conn.close()
+            return []
+
+        query = """
+            SELECT
+                id, code, name,
+                department_count, total_headcount,
+                manager_id, manager_name,
+                is_active AS status,
+                created_at, updated_at
+            FROM esb_data.master_division
+            WHERE 1=1
+        """
+        params = []
+        if status:
+            query += " AND is_active = %s"
+            params.append(status == 'active')
+
+        query += " ORDER BY name LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        cur.execute(query, params)
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return rows
+    except Exception as e:
+        print(f"Error fetching divisions: {e}")
+        return []
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # INLINE DATABASE MIGRATION ENDPOINT
