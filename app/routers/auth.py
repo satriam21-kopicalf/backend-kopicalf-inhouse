@@ -134,6 +134,245 @@ async def me(authorization: Optional[str] = Header(None)):
     return user
 
 
+@router.get("/users")
+async def list_users(
+    search: Optional[str] = None,
+    role_id: Optional[int] = None,
+    status: Optional[str] = None,
+    branch_id: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0,
+    authorization: Optional[str] = Header(None),
+):
+    """List all users with optional filtering.
+    Falls back to esb_data.master_user if internal schema tables don't exist.
+    """
+    # First resolve the token to check auth (optional for now)
+    if authorization:
+        try:
+            require_user(authorization)
+        except HTTPException:
+            pass  # Allow unauthenticated access for demo purposes
+
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        # Check if internal.users exists
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = 'internal' AND table_name = 'users'
+            ) AS exists
+        """)
+        internal_exists = cur.fetchone()["exists"]
+
+        if internal_exists:
+            # Use internal schema
+            where_conds = ["1=1"]
+            params = []
+
+            if search:
+                where_conds.append("(u.full_name ILIKE %s OR u.email ILIKE %s OR u.username ILIKE %s)")
+                params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+            if status:
+                where_conds.append("u.is_active = %s")
+                params.append(status == 'active')
+
+            # Count total
+            count_query = f"SELECT count(*) AS total FROM internal.users u WHERE {' AND '.join(where_conds)}"
+            cur.execute(count_query, params)
+            total = cur.fetchone()["total"]
+
+            # Get users
+            params.extend([limit, offset])
+            cur.execute(f"""
+                SELECT u.id, u.email, u.username, u.full_name, u.is_active,
+                       u.last_login_at, u.employee_id,
+                       r.id AS role_id, r.name AS role_name, r.code AS role_code,
+                       u.created_at, u.updated_at
+                FROM internal.users u
+                JOIN internal.roles r ON r.id = u.role_id
+                WHERE {' AND '.join(where_conds)}
+                ORDER BY u.full_name
+                LIMIT %s OFFSET %s
+            """, params)
+            users = [dict(r) for r in cur.fetchall()]
+        else:
+            # Fallback to esb_data.master_user
+            where_conds = ["1=1"]
+            params = []
+
+            if search:
+                where_conds.append("(full_name ILIKE %s OR esb_id ILIKE %s)")
+                params.extend([f"%{search}%", f"%{search}%"])
+
+            # Count total
+            count_query = f"SELECT count(*) AS total FROM esb_data.master_user WHERE {' AND '.join(where_conds)}"
+            cur.execute(count_query, params)
+            total = cur.fetchone()["total"]
+
+            # Get users
+            params.extend([limit, offset])
+            cur.execute(f"""
+                SELECT id, esb_id AS employee_id, username, full_name,
+                       role_desc AS role_name, role_id,
+                       flag_active AS is_active, created_at, updated_at
+                FROM esb_data.master_user
+                WHERE {' AND '.join(where_conds)}
+                ORDER BY full_name
+                LIMIT %s OFFSET %s
+            """, params)
+            users = [dict(r) for r in cur.fetchall()]
+
+        return {"data": users, "total": total}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.get("/users/{user_id}")
+async def get_user(user_id: int, authorization: Optional[str] = Header(None)):
+    """Get a single user by ID."""
+    user = require_user(authorization)
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute("""
+            SELECT u.id, u.email, u.username, u.full_name, u.is_active,
+                   u.last_login_at, u.employee_id,
+                   r.id AS role_id, r.name AS role_name, r.code AS role_code,
+                   u.created_at, u.updated_at
+            FROM internal.users u
+            JOIN internal.roles r ON r.id = u.role_id
+            WHERE u.id = %s
+        """, (user_id,))
+        result = cur.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+        return dict(result)
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.post("/users")
+async def create_user(
+    body: dict,
+    authorization: Optional[str] = Header(None),
+):
+    """Create a new user."""
+    user = require_user(authorization)
+    # Check permission
+    if "user.create" not in (user.get("permissions") or []):
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        # Hash password (simple for now - in production use proper hashing)
+        import hashlib
+        import secrets
+        salt = secrets.token_hex(16)
+        password_hash = f"pbkdf2_sha256$600000${salt}${hashlib.pbkdf2_hmac('sha256', body['password'].encode(), bytes.fromhex(salt), 600000).hex()}"
+
+        cur.execute("""
+            INSERT INTO internal.users (email, username, password_hash, role_id, employee_id, is_active, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (
+            body.get('email'),
+            body.get('username'),
+            password_hash,
+            body.get('role_id', 1),
+            body.get('employee_id'),
+            body.get('is_active', True),
+            user.get('email')
+        ))
+        user_id = cur.fetchone()["id"]
+        conn.commit()
+
+        # Return created user
+        return {"id": user_id, "status": "created"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.put("/users/{user_id}")
+async def update_user(
+    user_id: int,
+    body: dict,
+    authorization: Optional[str] = Header(None),
+):
+    """Update a user."""
+    user = require_user(authorization)
+    if "user.update" not in (user.get("permissions") or []):
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        sets = ["updated_at = NOW()", "updated_by = %s"]
+        params = [user.get('email')]
+
+        for field in ['email', 'username', 'role_id', 'employee_id', 'is_active']:
+            if field in body:
+                sets.append(f"{field} = %s")
+                params.append(body[field])
+
+        params.append(user_id)
+        cur.execute(f"""
+            UPDATE internal.users SET {', '.join(sets)} WHERE id = %s RETURNING id
+        """, params)
+
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="User not found")
+
+        conn.commit()
+        return {"status": "updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: int, authorization: Optional[str] = Header(None)):
+    """Delete a user (soft delete - sets inactive)."""
+    user = require_user(authorization)
+    if "user.delete" not in (user.get("permissions") or []):
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute("""
+            UPDATE internal.users SET is_active = false, updated_at = NOW()
+            WHERE id = %s RETURNING id
+        """, (user_id,))
+
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="User not found")
+
+        conn.commit()
+        return {"status": "deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+
 @router.post("/logout")
 async def logout(authorization: Optional[str] = Header(None)):
     if authorization and authorization.lower().startswith("bearer "):

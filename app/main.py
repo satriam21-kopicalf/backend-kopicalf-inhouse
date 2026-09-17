@@ -99,6 +99,7 @@ async def list_branches(
 
 @app.get("/api/v1/departments")
 async def list_departments(
+    search: str | None = None,
     division_id: int | None = None,
     status: str | None = None,
     limit: int = 100,
@@ -110,7 +111,7 @@ async def list_departments(
 
     db_url = os.getenv('DB_POOLER_URL') or os.getenv('DATABASE_URL') or os.getenv('DB_DIRECT_URL')
     if not db_url:
-        return []
+        return {"data": [], "total": 0}
 
     try:
         import psycopg2
@@ -128,36 +129,48 @@ async def list_departments(
         if not cur.fetchone()['exists']:
             cur.close()
             conn.close()
-            return []
+            return {"data": [], "total": 0}
 
-        query = """
+        where_conds = ["1=1"]
+        params = []
+
+        if search:
+            where_conds.append("(name ILIKE %s OR code ILIKE %s OR manager_name ILIKE %s)")
+            params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+        if division_id:
+            where_conds.append("division_id = %s")
+            params.append(division_id)
+        if status:
+            where_conds.append("is_active = %s")
+            params.append(status == 'active')
+
+        where_clause = " AND ".join(where_conds)
+
+        # Get total count
+        count_params = params.copy()
+        cur.execute(f"SELECT count(*) AS total FROM esb_data.master_department WHERE {where_clause}", count_params)
+        total = cur.fetchone()["total"]
+
+        # Get departments
+        params.extend([limit, offset])
+        cur.execute(f"""
             SELECT
                 id, code, name, division_id, division_name,
                 manager_id, manager_name,
                 employee_count, is_active AS status,
                 created_at, updated_at
             FROM esb_data.master_department
-            WHERE 1=1
-        """
-        params = []
-        if division_id:
-            query += " AND division_id = %s"
-            params.append(division_id)
-        if status:
-            query += " AND is_active = %s"
-            params.append(status == 'active')
-
-        query += " ORDER BY name LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
-
-        cur.execute(query, params)
+            WHERE {where_clause}
+            ORDER BY name
+            LIMIT %s OFFSET %s
+        """, params)
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
-        return rows
+        return {"data": rows, "total": total}
     except Exception as e:
         print(f"Error fetching departments: {e}")
-        return []
+        return {"data": [], "total": 0}
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -166,6 +179,7 @@ async def list_departments(
 
 @app.get("/api/v1/divisions")
 async def list_divisions(
+    search: str | None = None,
     status: str | None = None,
     limit: int = 100,
     offset: int = 0,
@@ -176,7 +190,7 @@ async def list_divisions(
 
     db_url = os.getenv('DB_POOLER_URL') or os.getenv('DATABASE_URL') or os.getenv('DB_DIRECT_URL')
     if not db_url:
-        return []
+        return {"data": [], "total": 0}
 
     try:
         import psycopg2
@@ -194,9 +208,28 @@ async def list_divisions(
         if not cur.fetchone()['exists']:
             cur.close()
             conn.close()
-            return []
+            return {"data": [], "total": 0}
 
-        query = """
+        where_conds = ["1=1"]
+        params = []
+
+        if search:
+            where_conds.append("(name ILIKE %s OR code ILIKE %s OR manager_name ILIKE %s)")
+            params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+        if status:
+            where_conds.append("is_active = %s")
+            params.append(status == 'active')
+
+        where_clause = " AND ".join(where_conds)
+
+        # Get total count
+        count_params = params.copy()
+        cur.execute(f"SELECT count(*) AS total FROM esb_data.master_division WHERE {where_clause}", count_params)
+        total = cur.fetchone()["total"]
+
+        # Get divisions
+        params.extend([limit, offset])
+        cur.execute(f"""
             SELECT
                 id, code, name,
                 department_count, total_headcount,
@@ -204,24 +237,17 @@ async def list_divisions(
                 is_active AS status,
                 created_at, updated_at
             FROM esb_data.master_division
-            WHERE 1=1
-        """
-        params = []
-        if status:
-            query += " AND is_active = %s"
-            params.append(status == 'active')
-
-        query += " ORDER BY name LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
-
-        cur.execute(query, params)
+            WHERE {where_clause}
+            ORDER BY name
+            LIMIT %s OFFSET %s
+        """, params)
         rows = [dict(r) for r in cur.fetchall()]
         cur.close()
         conn.close()
-        return rows
+        return {"data": rows, "total": total}
     except Exception as e:
         print(f"Error fetching divisions: {e}")
-        return []
+        return {"data": [], "total": 0}
 
 
 # ─────────────────────────────────────────────────────────────────────────
